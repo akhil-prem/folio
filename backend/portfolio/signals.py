@@ -8,9 +8,9 @@ from .models import Profile
 
 
 def ensure_bootstrap_user():
-    email = settings.FOLIO_BOOTSTRAP_EMAIL
-    password = settings.FOLIO_BOOTSTRAP_PASSWORD
-    name = settings.FOLIO_BOOTSTRAP_NAME
+    email = settings.BOOTSTRAP_EMAIL
+    password = settings.BOOTSTRAP_PASSWORD
+    name = settings.BOOTSTRAP_NAME
     User = get_user_model()
     user, created = User.objects.get_or_create(
         username=email,

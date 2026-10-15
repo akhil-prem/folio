@@ -1,15 +1,31 @@
 from pathlib import Path
 import os
 
+import dj_database_url
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 
-SECRET_KEY = os.environ.get("FOLIO_SECRET_KEY", "dev-only-folio-secret-key-change-me")
-DEBUG = os.environ.get("FOLIO_DEBUG", "1") == "1"
-ALLOWED_HOSTS = [host.strip() for host in os.environ.get("FOLIO_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if host.strip()]
 
-FOLIO_BOOTSTRAP_EMAIL = os.environ.get("FOLIO_BOOTSTRAP_EMAIL", "admin@folio.app")
-FOLIO_BOOTSTRAP_PASSWORD = os.environ.get("FOLIO_BOOTSTRAP_PASSWORD", "folio123")
-FOLIO_BOOTSTRAP_NAME = os.environ.get("FOLIO_BOOTSTRAP_NAME", "Folio Admin")
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_list(name, default=""):
+    return [item.strip() for item in os.environ.get(name, default).split(",") if item.strip()]
+
+
+SECRET_KEY = os.environ["SECRET_KEY"]
+DEBUG = env_bool("DEBUG", False)
+ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "127.0.0.1,localhost")
+
+BOOTSTRAP_EMAIL = os.environ.get("BOOTSTRAP_EMAIL", "admin@folio.app")
+BOOTSTRAP_PASSWORD = os.environ.get("BOOTSTRAP_PASSWORD", "folio123")
+BOOTSTRAP_NAME = os.environ.get("BOOTSTRAP_NAME", "Folio Admin")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -27,6 +43,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -37,6 +54,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "folio.urls"
 APPEND_SLASH = False
+WSGI_APPLICATION = "folio.wsgi.application"
 
 TEMPLATES = [
     {
@@ -53,13 +71,11 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "folio.wsgi.application"
-
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
+    "default": dj_database_url.config(
+        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+        conn_max_age=600,
+    )
 }
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -67,15 +83,16 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = "en-in"
-TIME_ZONE = "Asia/Kolkata"
+TIME_ZONE = os.environ.get("TIME_ZONE", "Asia/Kolkata")
 USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS")
+CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -84,6 +101,5 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
-    "DEFAULT_PAGINATION_CLASS": None,
     "EXCEPTION_HANDLER": "portfolio.views.folio_exception_handler",
 }

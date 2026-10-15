@@ -8,19 +8,18 @@ Django REST API for Folio. SQLite is used locally. Members and holdings are empt
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+copy .env.example .env
 python manage.py migrate
 python manage.py bootstrap
 python manage.py runserver
 ```
 
-The API listens on `http://127.0.0.1:8000`. Vite proxies `/api` to that origin.
+Copy `.env.example` to `.env` and set `SECRET_KEY` before running. The API listens on `http://127.0.0.1:8000`. Vite proxies `/api` to that origin.
 
-First login:
+First login (from `.env`):
 
 - Email: `admin@folio.app`
 - Password: `folio123`
-
-Override with `FOLIO_BOOTSTRAP_EMAIL` and `FOLIO_BOOTSTRAP_PASSWORD` if needed.
 
 ## Endpoints
 
