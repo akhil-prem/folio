@@ -1,6 +1,11 @@
 import type { Account, Holding, Member } from './types'
 
 const TOKEN_KEY = 'folio-token'
+const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
+
+function apiUrl(path: string) {
+  return `${API_URL}${path}`
+}
 
 export function getToken() {
   return sessionStorage.getItem(TOKEN_KEY)
@@ -16,7 +21,7 @@ export async function apiFetch(input: string, init: RequestInit = {}) {
   const token = getToken()
   if (token) headers.set('Authorization', `Token ${token}`)
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-  const response = await fetch(input, { ...init, headers })
+  const response = await fetch(apiUrl(input), { ...init, headers })
   if (response.status === 401 && !input.includes('/api/auth/login')) {
     setToken(null)
   }
