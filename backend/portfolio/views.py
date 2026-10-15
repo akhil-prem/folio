@@ -137,11 +137,10 @@ class HoldingViewSet(viewsets.ModelViewSet):
 
 class MarketOverviewView(APIView):
     def get(self, request):
-        return market.proxy_json(
-            "https://downstox.com/api/india-markets/overview",
-            ttl=20,
-            key="market-overview",
-        )
+        try:
+            return Response(market.market_overview())
+        except Exception as exc:
+            return Response({"error": str(exc) or "Market data unavailable"}, status=502)
 
 
 class NseMoversView(APIView):
@@ -207,12 +206,12 @@ class GrowwCompanyView(APIView):
 
 class StockQuoteView(APIView):
     def get(self, request, symbol: str):
-        clean = symbol.strip().upper()
-        return market.proxy_json(
-            f"https://downstox.com/api/stocks/{clean}",
-            ttl=45,
-            key=f"stock-{clean}",
-        )
+        try:
+            return Response(market.stock_quote(symbol))
+        except LookupError:
+            return Response({"error": "Stock not found"}, status=404)
+        except Exception as exc:
+            return Response({"error": str(exc) or "Quote unavailable"}, status=502)
 
 
 class IpoListView(APIView):

@@ -108,7 +108,7 @@ type MarketOverview = {
   indices: {
     nse: MarketQuote
     bse: MarketQuote
-    giftnifty: MarketQuote
+    giftnifty?: MarketQuote
   }
   extras: MarketExtra[]
   sectors?: MarketSector[]
@@ -1420,7 +1420,7 @@ function MarketsPage({
   )
   const extras = data?.extras?.slice(0, 8) ?? []
   const news = data?.news?.slice(0, 6) ?? []
-  const marketIsLive = Boolean(data?.indices.nse.isLive || data?.indices.bse.isLive)
+  const marketIsLive = Boolean(data?.indices.nse?.isLive || data?.indices.bse?.isLive)
   const updatedAt = data?.timestamp
     ? new Date(data.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
     : ''
@@ -1435,10 +1435,14 @@ function MarketsPage({
     )
   }, [stockQuotes, stockSearch])
   const indices = data ? [
-    { name: 'NIFTY 50', price: data.indices.nse.price, change: data.indices.nse.change, changeAbs: data.indices.nse.changeAbs },
-    { name: 'SENSEX', price: data.indices.bse.price, change: data.indices.bse.change, changeAbs: data.indices.bse.changeAbs },
-    { name: 'GIFT Nifty', price: data.indices.giftnifty.price, change: data.indices.giftnifty.change, changeAbs: data.indices.giftnifty.changeAbs },
-  ] : []
+    { name: 'NIFTY 50', quote: data.indices.nse },
+    { name: 'SENSEX', quote: data.indices.bse },
+    { name: 'GIFT Nifty', quote: data.indices.giftnifty },
+  ].flatMap((item) => (
+    item.quote && Number.isFinite(item.quote.price)
+      ? [{ name: item.name, price: item.quote.price, change: item.quote.change, changeAbs: item.quote.changeAbs }]
+      : []
+  )) : []
   const advancing = sectors.filter((sector) => sector.change >= 0).length
   const declining = sectors.length - advancing
 
@@ -1475,7 +1479,7 @@ function MarketsPage({
                 {data && <span className={`market-status ${marketIsLive ? 'live' : ''}`}><i />{marketIsLive ? 'Live market' : 'Market closed'}</span>}
               </div>
               <h2>Benchmarks, sectors, and stock quotes</h2>
-              <p>Auto-refreshes every minute. Stock CMPs are last available Downstox values, not tick-by-tick prices.</p>
+              <p>Auto-refreshes every minute. Stock CMPs are the latest exchange prices, not tick-by-tick prices.</p>
             </div>
             <div className="markets-kpis">
               {loading && !data ? <KpiSkeleton /> : (
@@ -1617,7 +1621,7 @@ function MarketsPage({
 
           {news.length > 0 && (
             <section className="panel">
-              <PanelHeader title="Market headlines" subtitle="Latest stories bundled with the Downstox overview" />
+              <PanelHeader title="Market headlines" subtitle="Latest stories bundled with the market overview" />
               <ul className="news-list">
                 {news.map((item) => (
                   <li key={item.link}>
@@ -1681,13 +1685,17 @@ function MarketPulse({ data, loading, error, onRefresh, onOpenMarkets }: {
   const indiaVix = data?.extras.find((item) => item.name === 'India VIX')
   const usdInr = data?.extras.find((item) => item.name === 'USD/INR')
   const items = data ? [
-    { name: 'NIFTY 50', price: data.indices.nse.price, change: data.indices.nse.change },
-    { name: 'SENSEX', price: data.indices.bse.price, change: data.indices.bse.change },
-    { name: 'GIFT Nifty', price: data.indices.giftnifty.price, change: data.indices.giftnifty.change },
-    ...(indiaVix ? [{ name: 'India VIX', price: indiaVix.price, change: indiaVix.change }] : []),
-    ...(usdInr ? [{ name: 'USD / INR', price: usdInr.price, change: usdInr.change }] : []),
-  ] : []
-  const marketIsLive = Boolean(data?.indices.nse.isLive || data?.indices.bse.isLive)
+    { name: 'NIFTY 50', quote: data.indices.nse },
+    { name: 'SENSEX', quote: data.indices.bse },
+    { name: 'GIFT Nifty', quote: data.indices.giftnifty },
+    ...(indiaVix ? [{ name: 'India VIX', quote: indiaVix }] : []),
+    ...(usdInr ? [{ name: 'USD / INR', quote: usdInr }] : []),
+  ].flatMap((item) => (
+    item.quote && Number.isFinite(item.quote.price)
+      ? [{ name: item.name, price: item.quote.price, change: item.quote.change }]
+      : []
+  )) : []
+  const marketIsLive = Boolean(data?.indices.nse?.isLive || data?.indices.bse?.isLive)
   const updatedAt = data?.timestamp
     ? new Date(data.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
     : ''
@@ -1728,7 +1736,7 @@ function MarketPulse({ data, loading, error, onRefresh, onOpenMarkets }: {
         </div>
       )}
       <div className="market-source">
-        Auto-refreshes every minute · Data for information only · <a href="https://downstox.com/api-docs" target="_blank" rel="noreferrer">Downstox public API</a>
+        Auto-refreshes every minute · Data for information only · <a href="https://www.nseindia.com/" target="_blank" rel="noreferrer">NSE</a>
       </div>
     </section>
   )
