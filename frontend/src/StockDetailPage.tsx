@@ -13,6 +13,7 @@ import {
 } from 'recharts'
 import { ArrowLeft, Trash2 } from 'lucide-react'
 import { fetchStockDetail, fetchStockHistory } from './api'
+import { BusyButton } from './BusyButton'
 import type { Holding, Member, StockDetail, StockPricePoint } from './types'
 
 const CHART_COLORS = ['#244d3c', '#3d6853', '#6c8b7c', '#e8995d', '#d9ba59', '#7a9e8a', '#b08d57', '#4f6f62']
@@ -50,6 +51,7 @@ type Props = {
   canEdit: boolean
   onBack: () => void
   onRemove: (holding: Holding) => void | Promise<void>
+  removing?: boolean
 }
 
 function filterPoints(points: StockPricePoint[], range: RangeKey) {
@@ -70,7 +72,7 @@ function formatAxisDate(ts: number, range: RangeKey) {
   return date.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
 }
 
-export function StockDetailPage({ holding, members, canEdit, onBack, onRemove }: Props) {
+export function StockDetailPage({ holding, members, canEdit, onBack, onRemove, removing = false }: Props) {
   const [detail, setDetail] = useState<StockDetail | null>(null)
   const [points, setPoints] = useState<StockPricePoint[]>([])
   const [range, setRange] = useState<RangeKey>('1Y')
@@ -134,9 +136,15 @@ export function StockDetailPage({ holding, members, canEdit, onBack, onRemove }:
         </button>
         <div className="mf-detail-actions">
           {canEdit && (
-            <button type="button" className="button secondary" onClick={() => void onRemove(holding)}>
-              <Trash2 size={16} /> Remove holding
-            </button>
+            <BusyButton
+              className="button secondary"
+              busy={removing}
+              busyLabel="Removing…"
+              idleIcon={<Trash2 size={16} />}
+              onClick={() => void onRemove(holding)}
+            >
+              Remove holding
+            </BusyButton>
           )}
         </div>
       </div>

@@ -3,6 +3,8 @@ import { BriefcaseBusiness, Download, Loader2, Plus, Search, Trash2, X } from 'l
 import { StockDetailPage } from './StockDetailPage'
 import type { Holding, Member } from './types'
 
+type RemoveHolding = (holding: Holding) => void | Promise<void>
+
 type HoldingSort = 'invested-desc' | 'invested-asc' | 'symbol-asc' | 'quantity-desc' | 'sector-asc'
 
 const investedOf = (holding: Holding) => holding.quantity * holding.avgPrice
@@ -37,7 +39,7 @@ type Props = {
   selectedMember: string
   canEdit: boolean
   onAdd: (memberId?: string) => void
-  onRemove: (holding: Holding) => void | Promise<void>
+  onRemove: RemoveHolding
 }
 
 export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, onRemove }: Props) {
@@ -46,6 +48,19 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
   const [showAll, setShowAll] = useState(false)
   const [busy, setBusy] = useState(false)
   const [detailId, setDetailId] = useState<string | null>(null)
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+
+  const deleteHolding = async (holding: Holding) => {
+    if (pendingDeleteId) return
+    if (!window.confirm(`Remove ${holding.symbol} from this portfolio?`)) return
+    setPendingDeleteId(holding.id)
+    try {
+      await onRemove(holding)
+      if (detailId === holding.id) setDetailId(null)
+    } finally {
+      setPendingDeleteId(null)
+    }
+  }
 
   const visible = useMemo(
     () => selectedMember === 'all' ? holdings : holdings.filter((holding) => holding.memberId === selectedMember),
@@ -79,10 +94,8 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
         members={members}
         canEdit={canEdit}
         onBack={() => setDetailId(null)}
-        onRemove={async (holding) => {
-          await onRemove(holding)
-          setDetailId(null)
-        }}
+        onRemove={deleteHolding}
+        removing={pendingDeleteId === detailHolding.id}
       />
     )
   }
@@ -210,7 +223,14 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
                       <td>{shortMoney(investedOf(holding))}</td>
                       <td onClick={(event) => event.stopPropagation()}>
                         {canEdit ? (
-                          <button className="icon-button danger" title="Delete holding" onClick={() => void onRemove(holding)}><Trash2 size={15} /></button>
+                          <button
+                            className="icon-button danger"
+                            title="Delete holding"
+                            disabled={pendingDeleteId === holding.id}
+                            onClick={() => void deleteHolding(holding)}
+                          >
+                            {pendingDeleteId === holding.id ? <Loader2 size={15} className="spinning" /> : <Trash2 size={15} />}
+                          </button>
                         ) : null}
                       </td>
                     </tr>

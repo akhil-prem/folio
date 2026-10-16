@@ -73,6 +73,7 @@ import {
   uploadMemberImage,
 } from './api'
 import { IposPage } from './IposPage'
+import { BusyButton } from './BusyButton'
 import { MutualFundsPage } from './MutualFundsPage'
 import { StocksPage } from './StocksPage'
 import { KpiSkeleton, TableSkeleton } from './loading'
@@ -666,6 +667,8 @@ function App() {
   const [ipoBusy, setIpoBusy] = useState(false)
   const [selectedMember, setSelectedMember] = useState('all')
   const [modal, setModal] = useState<ModalState>(null)
+  const [pendingMemberDeleteId, setPendingMemberDeleteId] = useState<string | null>(null)
+  const [loggingOut, setLoggingOut] = useState(false)
   const [memberSearch, setMemberSearch] = useState('')
   const [marketData, setMarketData] = useState<MarketOverview | null>(null)
   const [marketLoading, setMarketLoading] = useState(false)
@@ -908,18 +911,22 @@ function App() {
       window.alert('Your account member cannot be removed.')
       return
     }
-    if (!window.confirm(`Remove ${member.name} and all their holdings?`)) return
-    await deleteMemberRequest(member.id)
-    const remaining = members.filter((item) => item.id !== member.id)
-    setMembers(remaining)
-    setHoldings(holdings.filter((holding) => holding.memberId !== member.id))
-    if (selectedMember === member.id) {
-      setSelectedMember(remaining.find((item) => item.isDefault)?.id ?? 'all')
+    if (pendingMemberDeleteId || !window.confirm(`Remove ${member.name} and all their holdings?`)) return
+    setPendingMemberDeleteId(member.id)
+    try {
+      await deleteMemberRequest(member.id)
+      const remaining = members.filter((item) => item.id !== member.id)
+      setMembers(remaining)
+      setHoldings(holdings.filter((holding) => holding.memberId !== member.id))
+      if (selectedMember === member.id) {
+        setSelectedMember(remaining.find((item) => item.isDefault)?.id ?? 'all')
+      }
+    } finally {
+      setPendingMemberDeleteId(null)
     }
   }
 
   const removeHolding = async (holding: Holding) => {
-    if (!window.confirm(`Remove ${holding.symbol} from this portfolio?`)) return
     await deleteHoldingRequest(holding.id)
     setHoldings(holdings.filter((item) => item.id !== holding.id))
   }
@@ -930,7 +937,6 @@ function App() {
   }
 
   const removeMutualFund = async (fund: MutualFund) => {
-    if (!window.confirm(`Remove ${fund.name} and all SIP months?`)) return
     await deleteMutualFundRequest(fund.id)
     setMutualFunds((current) => current.filter((item) => item.id !== fund.id))
   }
@@ -964,13 +970,19 @@ function App() {
   }
 
   const logout = async () => {
-    await logoutRequest()
-    setAccount(emptyAccount)
-    setMembers([])
-    setHoldings([])
-    setMutualFunds([])
-    setAuthenticated(false)
-    setView('dashboard')
+    if (loggingOut) return
+    setLoggingOut(true)
+    try {
+      await logoutRequest()
+      setAccount(emptyAccount)
+      setMembers([])
+      setHoldings([])
+      setMutualFunds([])
+      setAuthenticated(false)
+      setView('dashboard')
+    } finally {
+      setLoggingOut(false)
+    }
   }
 
   const filteredMembers = members.filter((member) =>
@@ -1028,7 +1040,9 @@ function App() {
             ) : view === 'ipos' ? (
               <button className={`button secondary${ipoBusy ? ' loading' : ''}`} disabled={ipoBusy} onClick={() => setIpoRefreshKey((value) => value + 1)}><RefreshCw size={16} className={ipoBusy ? 'spinning' : undefined} /> Refresh</button>
             ) : (
-              <button className="button secondary" onClick={logout}><LogOut size={17} /> Log out</button>
+              <BusyButton className="button secondary" busy={loggingOut} busyLabel="Logging out…" idleIcon={<LogOut size={17} />} onClick={() => void logout()}>
+                Log out
+              </BusyButton>
             )}
           </div>
         </header>
@@ -1390,7 +1404,14 @@ function App() {
                           <button className="icon-button" title="Edit member" onClick={() => setModal({ type: 'edit-member', member })}><Pencil size={16} /></button>
                         )}
                         {canManageMembers && !member.isOwner && (
-                          <button className="icon-button danger" title="Delete member" onClick={() => removeMember(member)}><Trash2 size={16} /></button>
+                          <button
+                            className="icon-button danger"
+                            title="Delete member"
+                            disabled={pendingMemberDeleteId === member.id}
+                            onClick={() => void removeMember(member)}
+                          >
+                            {pendingMemberDeleteId === member.id ? <Loader2 size={16} className="spinning" /> : <Trash2 size={16} />}
+                          </button>
                         )}
                       </div>
                     </div>
@@ -1436,6 +1457,7 @@ function App() {
             }}
             onChangePassword={() => setView('password')}
             onLogout={logout}
+            loggingOut={loggingOut}
           />
         )}
 
@@ -1521,11 +1543,12 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
   )
 }
 
-function ProfileScreen({ account, onSave, onChangePassword, onLogout }: {
+function ProfileScreen({ account, onSave, onChangePassword, onLogout, loggingOut = false }: {
   account: Account
   onSave: (account: Account) => Promise<void>
   onChangePassword: () => void
   onLogout: () => void
+  loggingOut?: boolean
 }) {
   const [form, setForm] = useState(account)
   const [saved, setSaved] = useState(false)
@@ -1577,10 +1600,15 @@ function ProfileScreen({ account, onSave, onChangePassword, onLogout }: {
           </div>
           {account.isAdmin && (
             <div className="settings-actions">
-              <button className={`button primary${saving ? ' loading' : ''}`} disabled={saving}>
-                {saving ? <Loader2 size={17} className="spinning" /> : <Save size={17} />}
-                {saving ? 'Saving…' : 'Save changes'}
-              </button>
+              <BusyButton
+                type="submit"
+                className="button primary"
+                busy={saving}
+                busyLabel="Saving…"
+                idleIcon={<Save size={17} />}
+              >
+                Save changes
+              </BusyButton>
             </div>
           )}
         </form>
@@ -1590,7 +1618,15 @@ function ProfileScreen({ account, onSave, onChangePassword, onLogout }: {
           <p>Use a strong password and update it regularly to keep your account secure.</p>
           <button className="button secondary" onClick={onChangePassword}>Change password</button>
           <hr />
-          <button className="logout-link" onClick={onLogout}><LogOut size={16} /> Log out of this device</button>
+          <BusyButton
+            className="logout-link"
+            busy={loggingOut}
+            busyLabel="Logging out…"
+            idleIcon={<LogOut size={16} />}
+            onClick={onLogout}
+          >
+            Log out of this device
+          </BusyButton>
         </aside>
       </div>
     </div>
@@ -1636,10 +1672,9 @@ function ChangePasswordScreen({ onSave, onBack }: {
             <label>Confirm new password<input required minLength={8} type="password" value={confirm} onChange={(event) => { setConfirm(event.target.value); setMessage(null) }} /></label>
             <div className="settings-actions">
               <button type="button" className="button ghost" onClick={onBack} disabled={saving}>Cancel</button>
-              <button className={`button primary${saving ? ' loading' : ''}`} disabled={saving}>
-                {saving ? <Loader2 size={16} className="spinning" /> : null}
-                {saving ? 'Updating…' : 'Update password'}
-              </button>
+              <BusyButton type="submit" className="button primary" busy={saving} busyLabel="Updating…">
+                Update password
+              </BusyButton>
             </div>
           </form>
         </section>
@@ -2010,14 +2045,14 @@ function MemberModal({
   }
 
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !saving && onClose()}>
       <form className="modal member-modal" onSubmit={(event) => void submit(event)}>
         <div className="modal-head">
           <div>
             <p className="eyebrow">Investor profile</p>
             <h2>{editing ? 'Edit member' : 'Add a member'}</h2>
           </div>
-          <button type="button" className="icon-button" onClick={onClose}><X size={20} /></button>
+          <button type="button" className="icon-button" onClick={onClose} disabled={saving}><X size={20} /></button>
         </div>
 
         <div className="member-image-field">
@@ -2080,8 +2115,15 @@ function MemberModal({
 
         {error && <p className="form-error">{error}</p>}
         <div className="modal-actions">
-          <button type="button" className="button ghost" onClick={onClose}>Cancel</button>
-          <button className="button primary" disabled={saving}>{editing ? 'Save changes' : 'Create member'}</button>
+          <button type="button" className="button ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <BusyButton
+            type="submit"
+            className="button primary"
+            busy={saving}
+            busyLabel={editing ? 'Saving…' : 'Creating…'}
+          >
+            {editing ? 'Save changes' : 'Create member'}
+          </BusyButton>
         </div>
       </form>
     </div>
@@ -2111,6 +2153,8 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
   const [activeIndex, setActiveIndex] = useState(0)
   const [searching, setSearching] = useState(false)
   const [lookingUp, setLookingUp] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
   const searchBoxRef = useRef<HTMLDivElement>(null)
   const selectedSymbolRef = useRef('')
   const lookupRef = useRef(0)
@@ -2259,24 +2303,31 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     const symbol = (form.symbol || search).trim().toUpperCase()
-    if (!symbol || !form.company.trim()) return
-    await onSave({
-      memberId: form.memberId,
-      symbol,
-      company: form.company.trim(),
-      sector: form.sector,
-      subSector: form.subSector,
-      cap: form.cap || 'Large',
-      broker: form.broker || 'Groww',
-      quantity: Number(form.quantity),
-      avgPrice: Number(form.avgPrice),
-    })
+    if (!symbol || !form.company.trim() || saving) return
+    setSaving(true)
+    setError('')
+    try {
+      await onSave({
+        memberId: form.memberId,
+        symbol,
+        company: form.company.trim(),
+        sector: form.sector,
+        subSector: form.subSector,
+        cap: form.cap || 'Large',
+        broker: form.broker || 'Groww',
+        quantity: Number(form.quantity),
+        avgPrice: Number(form.avgPrice),
+      })
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not add stock.')
+      setSaving(false)
+    }
   }
 
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !saving && onClose()}>
       <form className="modal wide" onSubmit={(event) => void submit(event)}>
-        <div className="modal-head"><div><p className="eyebrow">New holding</p><h2>Add a stock</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={20} /></button></div>
+        <div className="modal-head"><div><p className="eyebrow">New holding</p><h2>Add a stock</h2></div><button type="button" className="icon-button" onClick={onClose} disabled={saving}><X size={20} /></button></div>
         {members.length === 0 ? <div className="modal-empty"><Building2 size={24} /><p>Create a member before adding a stock.</p></div> : (
           <>
             <div className="form-grid">
@@ -2377,7 +2428,15 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
             </div>
           </>
         )}
-        <div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>Cancel</button>{members.length > 0 && <button className="button primary">Add to portfolio</button>}</div>
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="button ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          {members.length > 0 && (
+            <BusyButton type="submit" className="button primary" busy={saving} busyLabel="Adding…">
+              Add to portfolio
+            </BusyButton>
+          )}
+        </div>
       </form>
     </div>
   )

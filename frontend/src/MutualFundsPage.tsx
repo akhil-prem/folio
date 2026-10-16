@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarDays, PiggyBank, Plus, Trash2, X } from 'lucide-react'
+import { CalendarDays, Loader2, PiggyBank, Plus, Trash2, X } from 'lucide-react'
 import { fetchMutualFundScheme, searchMutualFunds } from './api'
+import { BusyButton } from './BusyButton'
 import { MutualFundDetailPage } from './MutualFundDetailPage'
 import type {
   Broker,
@@ -54,6 +55,31 @@ export function MutualFundsPage({
   const [sipFundId, setSipFundId] = useState<string | null>(null)
   const [historyFundId, setHistoryFundId] = useState<string | null>(null)
   const [detailFundId, setDetailFundId] = useState<string | null>(null)
+  const [pendingFundDeleteId, setPendingFundDeleteId] = useState<string | null>(null)
+  const [pendingSipDeleteId, setPendingSipDeleteId] = useState<string | null>(null)
+
+  const deleteFund = async (fund: MutualFund) => {
+    if (pendingFundDeleteId) return
+    if (!window.confirm(`Remove ${fund.name} and all SIP months?`)) return
+    setPendingFundDeleteId(fund.id)
+    try {
+      await onDeleteFund(fund)
+      if (detailFundId === fund.id) setDetailFundId(null)
+      if (historyFundId === fund.id) setHistoryFundId(null)
+    } finally {
+      setPendingFundDeleteId(null)
+    }
+  }
+
+  const deleteSip = async (fundId: string, sipId: string) => {
+    if (pendingSipDeleteId) return
+    setPendingSipDeleteId(sipId)
+    try {
+      await onDeleteSip(fundId, sipId)
+    } finally {
+      setPendingSipDeleteId(null)
+    }
+  }
 
   const visible = useMemo(() => {
     const scoped = selectedMember === 'all' ? funds : funds.filter((fund) => fund.memberId === selectedMember)
@@ -85,20 +111,21 @@ export function MutualFundsPage({
             canEdit={canEdit}
             onClose={() => setHistoryFundId(null)}
             onAddSip={() => setSipFundId(historyFund.id)}
-            onDeleteSip={onDeleteSip}
-          />
-        )}
-        {sipFund && (
-          <SipModal
-            fund={sipFund}
-            nested={Boolean(historyFund)}
-            onClose={() => setSipFundId(null)}
-            onSave={async (payload) => {
-              await onAddSip(payload)
-              setSipFundId(null)
-            }}
-          />
-        )}
+          onDeleteSip={deleteSip}
+          pendingSipDeleteId={pendingSipDeleteId}
+        />
+      )}
+      {sipFund && (
+        <SipModal
+          fund={sipFund}
+          nested={Boolean(historyFund)}
+          onClose={() => setSipFundId(null)}
+          onSave={async (payload) => {
+            await onAddSip(payload)
+            setSipFundId(null)
+          }}
+        />
+      )}
       </>
     )
   }
@@ -142,7 +169,14 @@ export function MutualFundsPage({
                   <span className="avatar" style={{ background: fund.color }}>{fund.name.slice(0, 2).toUpperCase()}</span>
                   <div className="member-card-actions" onClick={(event) => event.stopPropagation()}>
                     {canEdit && (
-                      <button className="icon-button danger" title="Delete fund" onClick={() => void onDeleteFund(fund)}><Trash2 size={16} /></button>
+                      <button
+                        className="icon-button danger"
+                        title="Delete fund"
+                        disabled={pendingFundDeleteId === fund.id}
+                        onClick={() => void deleteFund(fund)}
+                      >
+                        {pendingFundDeleteId === fund.id ? <Loader2 size={16} className="spinning" /> : <Trash2 size={16} />}
+                      </button>
                     )}
                   </div>
                 </div>
@@ -210,7 +244,8 @@ export function MutualFundsPage({
           onAddSip={() => {
             setSipFundId(historyFund.id)
           }}
-          onDeleteSip={onDeleteSip}
+          onDeleteSip={deleteSip}
+          pendingSipDeleteId={pendingSipDeleteId}
         />
       )}
       {sipFund && (
@@ -250,12 +285,14 @@ function SipHistoryModal({
   onClose,
   onAddSip,
   onDeleteSip,
+  pendingSipDeleteId = null,
 }: {
   fund: MutualFund
   canEdit: boolean
   onClose: () => void
   onAddSip: () => void
   onDeleteSip: (fundId: string, sipId: string) => Promise<void>
+  pendingSipDeleteId?: string | null
 }) {
   const years = useMemo(() => groupSipsByYear(fund.sips), [fund.sips])
   const [yearFilter, setYearFilter] = useState<'all' | number>('all')
@@ -314,9 +351,10 @@ function SipHistoryModal({
                         <button
                           className="icon-button danger"
                           title="Remove month"
+                          disabled={pendingSipDeleteId === sip.id}
                           onClick={() => void onDeleteSip(fund.id, sip.id)}
                         >
-                          <Trash2 size={14} />
+                          {pendingSipDeleteId === sip.id ? <Loader2 size={14} className="spinning" /> : <Trash2 size={14} />}
                         </button>
                       ) : <span />}
                     </div>
@@ -426,6 +464,7 @@ function FundModal({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if (saving) return
     if (!memberId || !selected) {
       setError('Pick a mutual fund scheme from the suggestions.')
       return
@@ -449,11 +488,11 @@ function FundModal({
   }
 
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !saving && onClose()}>
       <form className="modal" onSubmit={(event) => void submit(event)}>
         <div className="modal-head">
           <div><p className="eyebrow">Mutual fund</p><h2>Add a fund</h2></div>
-          <button type="button" className="icon-button" onClick={onClose}><X size={20} /></button>
+          <button type="button" className="icon-button" onClick={onClose} disabled={saving}><X size={20} /></button>
         </div>
         <div className="form-grid">
           <label>Member
@@ -542,8 +581,16 @@ function FundModal({
         )}
         {error && <p className="form-error">{error}</p>}
         <div className="modal-actions">
-          <button type="button" className="button ghost" onClick={onClose}>Cancel</button>
-          <button className="button primary" disabled={saving || loadingScheme || !selected}>Add fund</button>
+          <button type="button" className="button ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <BusyButton
+            type="submit"
+            className="button primary"
+            busy={saving || loadingScheme}
+            disabled={!selected}
+            busyLabel={loadingScheme ? 'Loading…' : 'Adding…'}
+          >
+            Add fund
+          </BusyButton>
         </div>
       </form>
     </div>
@@ -571,6 +618,7 @@ function SipModal({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if (saving) return
     const value = Number(amount)
     if (!value || value <= 0) {
       setError('Enter a valid SIP amount.')
@@ -595,12 +643,12 @@ function SipModal({
   return (
     <div
       className={`modal-backdrop${nested ? ' modal-backdrop--nested' : ''}`}
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+      onMouseDown={(event) => event.target === event.currentTarget && !saving && onClose()}
     >
       <form className="modal" onSubmit={(event) => void submit(event)}>
         <div className="modal-head">
           <div><p className="eyebrow">{fund.name}</p><h2>Add SIP month</h2></div>
-          <button type="button" className="icon-button" onClick={onClose}><X size={20} /></button>
+          <button type="button" className="icon-button" onClick={onClose} disabled={saving}><X size={20} /></button>
         </div>
         <p className="member-owner-note">Log each month separately. Amounts can differ when you change SIP.</p>
         <div className="form-grid">
@@ -617,8 +665,10 @@ function SipModal({
         <label>Note<input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Optional — e.g. increased SIP" /></label>
         {error && <p className="form-error">{error}</p>}
         <div className="modal-actions">
-          <button type="button" className="button ghost" onClick={onClose}>Cancel</button>
-          <button className="button primary" disabled={saving}>Save month</button>
+          <button type="button" className="button ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <BusyButton type="submit" className="button primary" busy={saving} busyLabel="Saving…">
+            Save month
+          </BusyButton>
         </div>
       </form>
     </div>
