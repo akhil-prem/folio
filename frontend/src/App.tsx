@@ -6,8 +6,8 @@ import {
   BarChart3,
   BriefcaseBusiness,
   Building2,
+  Camera,
   ChevronDown,
-  Download,
   Eye,
   EyeOff,
   KeyRound,
@@ -18,6 +18,9 @@ import {
   LockKeyhole,
   LogOut,
   Mail,
+  Moon,
+  Pencil,
+  PiggyBank,
   Plus,
   Radio,
   RefreshCw,
@@ -25,10 +28,10 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Sun,
   Trash2,
   TrendingDown,
   TrendingUp,
-  Trophy,
   UserRound,
   UsersRound,
   WalletCards,
@@ -51,25 +54,39 @@ import {
   changePassword,
   createHolding,
   createMember,
+  createMutualFund,
+  createSipEntry,
   deleteHolding as deleteHoldingRequest,
   deleteMember as deleteMemberRequest,
+  deleteMutualFund as deleteMutualFundRequest,
+  deleteSipEntry as deleteSipEntryRequest,
   fetchAccount,
   fetchHoldings,
   fetchMembers,
+  fetchMutualFunds,
   loginRequest,
   logoutRequest,
   patchHolding,
   saveAccount,
   setToken,
+  updateMember,
+  uploadMemberImage,
 } from './api'
 import { IposPage } from './IposPage'
+import { MutualFundsPage } from './MutualFundsPage'
+import { StocksPage } from './StocksPage'
 import { KpiSkeleton, TableSkeleton } from './loading'
 import { SECTORS, SECTOR_TREE, classifyStock } from './sectors'
-import type { Account, Holding, MarketCap, Member } from './types'
+import { applyTheme, getPreferredTheme, toggleTheme, type Theme } from './theme'
+import type { Account, Broker, Holding, MarketCap, Member, MemberAccess, MemberInput, MutualFund, MutualFundInput, SipEntryInput } from './types'
+import { BROKERS } from './types'
 
-type View = 'dashboard' | 'members' | 'markets' | 'ipos' | 'profile' | 'password'
-type ModalState = { type: 'member' } | { type: 'holding'; memberId?: string } | null
-type HoldingSort = 'invested-desc' | 'invested-asc' | 'symbol-asc' | 'quantity-desc' | 'sector-asc'
+type View = 'dashboard' | 'stocks' | 'members' | 'funds' | 'markets' | 'ipos' | 'profile' | 'password'
+type ModalState =
+  | { type: 'member' }
+  | { type: 'edit-member'; member: Member }
+  | { type: 'holding'; memberId?: string }
+  | null
 
 type MarketQuote = {
   price: number
@@ -145,7 +162,47 @@ type StockSuggestion = {
 }
 
 const CHART_COLORS = ['#244d3c', '#e8995d', '#7267d9', '#e0ba4c', '#d76868', '#3f85a6', '#77a87a']
-const emptyAccount: Account = { name: '', email: '', phone: '', role: '' }
+const emptyAccount: Account = {
+  name: '',
+  email: '',
+  phone: '',
+  role: '',
+  image: null,
+  isAdmin: false,
+  canEdit: false,
+  canManageMembers: false,
+  access: 'readonly',
+  memberId: null,
+}
+
+function MemberAvatar({ member, size = 'normal' }: { member: Member; size?: 'normal' | 'small' }) {
+  if (member.image) {
+    return (
+      <span className={`avatar image${size === 'small' ? ' small' : ''}`} style={{ backgroundImage: `url(${member.image})` }} aria-hidden />
+    )
+  }
+  return (
+    <span className={`avatar${size === 'small' ? ' small' : ''}`} style={{ background: member.color }}>
+      {initials(member.name)}
+    </span>
+  )
+}
+
+function AccountAvatar({ account, size = 'small' }: { account: Account; size?: 'small' | 'profile' }) {
+  if (account.image) {
+    return (
+      <span
+        className={size === 'profile' ? 'profile-avatar image' : 'avatar image small'}
+        style={{ backgroundImage: `url(${account.image})` }}
+        aria-hidden
+      />
+    )
+  }
+  if (size === 'profile') {
+    return <span className="profile-avatar">{initials(account.name)}</span>
+  }
+  return <span className="avatar small">{initials(account.name)}</span>
+}
 
 const money = (amount: number, compact = false) =>
   new Intl.NumberFormat('en-IN', {
@@ -506,34 +563,37 @@ const allocationBy = (holdings: Holding[], key: (holding: Holding) => string) =>
   })
   return [...values].map(([name, data]) => ({ name, ...data })).sort((a, b) => b.value - a.value)
 }
-const csvCell = (value: string | number) => {
-  const text = String(value)
-  const safe = /^[=+\-@]/.test(text) ? `'${text}` : text
-  return `"${safe.replaceAll('"', '""')}"`
-}
-
-const downloadFile = (content: string, filename: string, type: string) => {
-  const url = URL.createObjectURL(new Blob([content], { type }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  link.click()
-  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className="theme-toggle"
+      onClick={onToggle}
+      aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+      title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+    >
+      {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
+    </button>
+  )
 }
 
 function App() {
+  const [theme, setTheme] = useState<Theme>(() => {
+    const initial = getPreferredTheme()
+    applyTheme(initial)
+    return initial
+  })
+  const switchTheme = () => setTheme((current) => toggleTheme(current))
   const [account, setAccount] = useState<Account>(emptyAccount)
   const [authenticated, setAuthenticated] = useState(false)
   const [bootstrapping, setBootstrapping] = useState(true)
   const [members, setMembers] = useState<Member[]>([])
   const [holdings, setHoldings] = useState<Holding[]>([])
+  const [mutualFunds, setMutualFunds] = useState<MutualFund[]>([])
 
-  const loadWorkspace = async () => {
-    const [nextMembers, nextHoldings] = await Promise.all([fetchMembers(), fetchHoldings()])
-    const normalized = nextHoldings.map(normalizeHolding)
-    setMembers(nextMembers)
-    setHoldings(normalized)
+  const enrichHoldings = async (normalized: Holding[], allowWrite: boolean) => {
     const symbols = [...new Set(normalized.map((item) => item.symbol.toUpperCase()))]
+    if (symbols.length === 0) return
     const profiles = await Promise.all(symbols.map((symbol) => fetchYahooProfile(symbol)))
     const bySymbol = new Map(symbols.map((symbol, index) => [symbol, profiles[index]]))
     const enriched = normalized.map((holding) => {
@@ -547,6 +607,7 @@ function App() {
       return { ...holding, sector: classified.sector, subSector: classified.subSector }
     })
     setHoldings(enriched)
+    if (!allowWrite) return
     await Promise.all(
       enriched.flatMap((holding, index) => {
         const previous = normalized[index]
@@ -554,6 +615,23 @@ function App() {
         return [patchHolding(holding.id, { sector: holding.sector, subSector: holding.subSector }).catch(() => holding)]
       }),
     )
+  }
+
+  const loadWorkspace = async (preferDefault = false, allowWrite = false) => {
+    const [nextMembers, nextHoldings, nextFunds] = await Promise.all([
+      fetchMembers(),
+      fetchHoldings(),
+      fetchMutualFunds(),
+    ])
+    const normalized = nextHoldings.map(normalizeHolding)
+    setMembers(nextMembers)
+    setMutualFunds(nextFunds)
+    if (preferDefault) {
+      const fallback = nextMembers.find((member) => member.isDefault)?.id ?? 'all'
+      setSelectedMember(fallback)
+    }
+    setHoldings(normalized)
+    void enrichHoldings(normalized, allowWrite)
   }
 
   useEffect(() => {
@@ -568,7 +646,7 @@ function App() {
           return
         }
         setAccount(nextAccount)
-        await loadWorkspace()
+        await loadWorkspace(true, nextAccount.canEdit)
         if (!cancelled) setAuthenticated(true)
       } catch {
         if (!cancelled) {
@@ -586,18 +664,9 @@ function App() {
   const [view, setView] = useState<View>('dashboard')
   const [ipoRefreshKey, setIpoRefreshKey] = useState(0)
   const [ipoBusy, setIpoBusy] = useState(false)
-  const [uiBusy, setUiBusy] = useState(false)
-  const flashUi = (action: () => void) => {
-    setUiBusy(true)
-    action()
-    window.setTimeout(() => setUiBusy(false), 280)
-  }
   const [selectedMember, setSelectedMember] = useState('all')
   const [modal, setModal] = useState<ModalState>(null)
   const [memberSearch, setMemberSearch] = useState('')
-  const [showAllHoldings, setShowAllHoldings] = useState(false)
-  const [holdingSearch, setHoldingSearch] = useState('')
-  const [holdingSort, setHoldingSort] = useState<HoldingSort>('invested-desc')
   const [marketData, setMarketData] = useState<MarketOverview | null>(null)
   const [marketLoading, setMarketLoading] = useState(false)
   const [marketError, setMarketError] = useState('')
@@ -673,10 +742,46 @@ function App() {
     [holdings, selectedMember],
   )
 
+  const visibleFunds = useMemo(
+    () => selectedMember === 'all' ? mutualFunds : mutualFunds.filter((fund) => fund.memberId === selectedMember),
+    [mutualFunds, selectedMember],
+  )
+
   const portfolio = useMemo(() => {
-    const invested = visibleHoldings.reduce((sum, holding) => sum + investedOf(holding), 0)
-    return { invested }
-  }, [visibleHoldings])
+    const stocksInvested = visibleHoldings.reduce((sum, holding) => sum + investedOf(holding), 0)
+    const fundsInvested = visibleFunds.reduce((sum, fund) => sum + fund.totalInvested, 0)
+    return {
+      stocksInvested,
+      fundsInvested,
+      invested: stocksInvested + fundsInvested,
+    }
+  }, [visibleHoldings, visibleFunds])
+
+  const fundAllocation = useMemo(
+    () => visibleFunds
+      .filter((fund) => fund.totalInvested > 0)
+      .map((fund) => ({ name: fund.name, value: fund.totalInvested, color: fund.color }))
+      .sort((a, b) => b.value - a.value),
+    [visibleFunds],
+  )
+
+  const sipTrend = useMemo(() => {
+    const totals = new Map<string, number>()
+    for (const fund of visibleFunds) {
+      for (const sip of fund.sips) {
+        const key = `${sip.year}-${String(sip.month).padStart(2, '0')}`
+        totals.set(key, (totals.get(key) ?? 0) + sip.amount)
+      }
+    }
+    return [...totals.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-12)
+      .map(([key, value]) => {
+        const [year, month] = key.split('-')
+        const label = new Date(Number(year), Number(month) - 1, 1).toLocaleString('en-IN', { month: 'short', year: '2-digit' })
+        return { name: label, value }
+      })
+  }, [visibleFunds])
 
   const sectorData = useMemo(() => allocationBy(visibleHoldings, (holding) => holding.sector), [visibleHoldings])
   const subSectorData = useMemo(
@@ -689,30 +794,35 @@ function App() {
     return order.map((cap) => ({ name: `${cap} cap`, count: visibleHoldings.filter((holding) => holding.cap === cap).length }))
   }, [visibleHoldings])
 
-  const topHoldings = useMemo(
-    () => [...visibleHoldings].sort((a, b) => investedOf(b) - investedOf(a)).slice(0, 5).map((holding) => ({
-      symbol: holding.symbol,
-      company: holding.company,
-      value: investedOf(holding),
-    })),
-    [visibleHoldings],
-  )
+  const combinedAllocation = useMemo(() => {
+    const rows = [
+      { name: 'Stocks', value: portfolio.stocksInvested, color: '#244d3c' },
+      { name: 'Mutual funds', value: portfolio.fundsInvested, color: '#e8995d' },
+    ].filter((row) => row.value > 0)
+    return rows
+  }, [portfolio.stocksInvested, portfolio.fundsInvested])
 
-  const sortedHoldings = useMemo(() => {
-    const query = holdingSearch.trim().toLowerCase()
-    const filtered = visibleHoldings.filter((holding) => {
-      const owner = members.find((member) => member.id === holding.memberId)?.name ?? ''
-      return `${holding.symbol} ${holding.company} ${holding.sector} ${holding.subSector} ${holding.cap} ${owner}`.toLowerCase().includes(query)
-    })
-
-    return [...filtered].sort((a, b) => {
-      if (holdingSort === 'invested-asc') return investedOf(a) - investedOf(b)
-      if (holdingSort === 'symbol-asc') return a.symbol.localeCompare(b.symbol)
-      if (holdingSort === 'quantity-desc') return b.quantity - a.quantity
-      if (holdingSort === 'sector-asc') return a.sector.localeCompare(b.sector) || (a.subSector || '').localeCompare(b.subSector || '') || a.symbol.localeCompare(b.symbol)
-      return investedOf(b) - investedOf(a)
-    })
-  }, [visibleHoldings, members, holdingSearch, holdingSort])
+  const brokerData = useMemo(() => {
+    const totals = new Map<string, { value: number; stocks: number; funds: number }>()
+    for (const holding of visibleHoldings) {
+      const broker = holding.broker || 'Other'
+      const current = totals.get(broker) ?? { value: 0, stocks: 0, funds: 0 }
+      current.value += investedOf(holding)
+      current.stocks += 1
+      totals.set(broker, current)
+    }
+    for (const fund of visibleFunds) {
+      const broker = fund.broker || 'Other'
+      const current = totals.get(broker) ?? { value: 0, stocks: 0, funds: 0 }
+      current.value += fund.totalInvested
+      current.funds += 1
+      totals.set(broker, current)
+    }
+    return [...totals.entries()]
+      .map(([name, data]) => ({ name, ...data }))
+      .filter((row) => row.value > 0)
+      .sort((a, b) => b.value - a.value)
+  }, [visibleHoldings, visibleFunds])
 
   if (bootstrapping) {
     return (
@@ -731,7 +841,7 @@ function App() {
           const nextAccount = await loginRequest(email, password)
           setAccount(nextAccount)
           try {
-            await loadWorkspace()
+            await loadWorkspace(true, nextAccount.canEdit)
           } catch {
             setMembers([])
             setHoldings([])
@@ -747,17 +857,43 @@ function App() {
     : members.find((member) => member.id === selectedMember)?.name ?? 'Member'
 
   const pageMeta: Record<View, { eyebrow: string; title: string }> = {
-    dashboard: { eyebrow: 'Portfolio intelligence', title: 'Good afternoon' },
+    dashboard: { eyebrow: 'Portfolio intelligence', title: 'Overview' },
+    stocks: { eyebrow: 'Equity holdings', title: 'Stocks' },
     members: { eyebrow: 'Investor directory', title: 'Members' },
+    funds: { eyebrow: 'Systematic investing', title: 'Mutual funds' },
     markets: { eyebrow: 'Indian markets', title: 'Live market' },
     ipos: { eyebrow: 'Primary market', title: 'IPOs' },
     profile: { eyebrow: 'Account settings', title: 'My profile' },
     password: { eyebrow: 'Security', title: 'Change password' },
   }
 
-  const addMember = async (member: Omit<Member, 'id' | 'joined' | 'color'>) => {
-    const created = await createMember(member)
-    setMembers([...members, created])
+  const canEdit = account.canEdit
+  const canManageMembers = account.canManageMembers
+
+  const upsertMemberLocal = (updated: Member) => {
+    setMembers((current) => {
+      const exists = current.some((item) => item.id === updated.id)
+      const next = exists
+        ? current.map((item) => (item.id === updated.id ? updated : item))
+        : [...current, updated]
+      return updated.isDefault ? next.map((item) => ({ ...item, isDefault: item.id === updated.id })) : next
+    })
+    if (account.memberId === updated.id || updated.isOwner) {
+      setAccount((current) => ({ ...current, image: updated.image }))
+    }
+  }
+
+  const addMember = async (member: MemberInput, image?: File | null) => {
+    let created = await createMember(member)
+    if (image) created = await uploadMemberImage(created.id, image)
+    upsertMemberLocal(created)
+    setModal(null)
+  }
+
+  const saveMember = async (id: string, member: MemberInput, image?: File | null) => {
+    let updated = await updateMember(id, member)
+    if (image) updated = await uploadMemberImage(id, image)
+    upsertMemberLocal(updated)
     setModal(null)
   }
 
@@ -768,11 +904,18 @@ function App() {
   }
 
   const removeMember = async (member: Member) => {
+    if (member.isOwner) {
+      window.alert('Your account member cannot be removed.')
+      return
+    }
     if (!window.confirm(`Remove ${member.name} and all their holdings?`)) return
     await deleteMemberRequest(member.id)
-    setMembers(members.filter((item) => item.id !== member.id))
+    const remaining = members.filter((item) => item.id !== member.id)
+    setMembers(remaining)
     setHoldings(holdings.filter((holding) => holding.memberId !== member.id))
-    if (selectedMember === member.id) setSelectedMember('all')
+    if (selectedMember === member.id) {
+      setSelectedMember(remaining.find((item) => item.isDefault)?.id ?? 'all')
+    }
   }
 
   const removeHolding = async (holding: Holding) => {
@@ -781,41 +924,43 @@ function App() {
     setHoldings(holdings.filter((item) => item.id !== holding.id))
   }
 
-  const exportHoldings = (format: 'csv' | 'json') => {
-    const rows = sortedHoldings.map((holding) => ({
-      member: members.find((member) => member.id === holding.memberId)?.name ?? '',
-      symbol: holding.symbol,
-      company: holding.company,
-      sector: holding.sector,
-      subSector: holding.subSector,
-      marketCap: holding.cap,
-      quantity: holding.quantity,
-      averagePrice: holding.avgPrice,
-      amountInvested: investedOf(holding),
+  const addMutualFund = async (fund: MutualFundInput) => {
+    const created = await createMutualFund(fund)
+    setMutualFunds((current) => [...current, created])
+  }
+
+  const removeMutualFund = async (fund: MutualFund) => {
+    if (!window.confirm(`Remove ${fund.name} and all SIP months?`)) return
+    await deleteMutualFundRequest(fund.id)
+    setMutualFunds((current) => current.filter((item) => item.id !== fund.id))
+  }
+
+  const addSip = async (entry: SipEntryInput) => {
+    const created = await createSipEntry(entry)
+    setMutualFunds((current) => current.map((fund) => {
+      if (fund.id !== entry.mutualFundId) return fund
+      const sips = [...fund.sips, created].sort((a, b) => b.year - a.year || b.month - a.month)
+      return {
+        ...fund,
+        sips,
+        sipCount: sips.length,
+        totalInvested: sips.reduce((sum, sip) => sum + sip.amount, 0),
+      }
     }))
-    const date = new Date().toISOString().slice(0, 10)
+  }
 
-    if (format === 'json') {
-      downloadFile(JSON.stringify(rows, null, 2), `folio-holdings-${date}.json`, 'application/json')
-      return
-    }
-
-    const headers = ['Member', 'Symbol', 'Company', 'Sector', 'Sub-sector', 'Market cap', 'Quantity', 'Average price', 'Amount invested']
-    const csv = [
-      headers.map(csvCell).join(','),
-      ...rows.map((row) => [
-        row.member,
-        row.symbol,
-        row.company,
-        row.sector,
-        row.subSector,
-        row.marketCap,
-        row.quantity,
-        row.averagePrice,
-        row.amountInvested,
-      ].map(csvCell).join(',')),
-    ].join('\r\n')
-    downloadFile(csv, `folio-holdings-${date}.csv`, 'text/csv;charset=utf-8')
+  const removeSip = async (fundId: string, sipId: string) => {
+    await deleteSipEntryRequest(sipId)
+    setMutualFunds((current) => current.map((fund) => {
+      if (fund.id !== fundId) return fund
+      const sips = fund.sips.filter((sip) => sip.id !== sipId)
+      return {
+        ...fund,
+        sips,
+        sipCount: sips.length,
+        totalInvested: sips.reduce((sum, sip) => sum + sip.amount, 0),
+      }
+    }))
   }
 
   const logout = async () => {
@@ -823,6 +968,7 @@ function App() {
     setAccount(emptyAccount)
     setMembers([])
     setHoldings([])
+    setMutualFunds([])
     setAuthenticated(false)
     setView('dashboard')
   }
@@ -837,6 +983,8 @@ function App() {
         <div className="brand"><span className="brand-mark"><TrendingUp size={20} /></span><span>Folio</span></div>
         <nav className="side-nav">
           <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}><LayoutDashboard size={19} /> Overview</button>
+          <button className={view === 'stocks' ? 'active' : ''} onClick={() => setView('stocks')}><BriefcaseBusiness size={19} /> Stocks<span className="nav-count">{holdings.length}</span></button>
+          <button className={view === 'funds' ? 'active' : ''} onClick={() => setView('funds')}><PiggyBank size={19} /> Mutual funds<span className="nav-count">{mutualFunds.length}</span></button>
           <button className={view === 'markets' ? 'active' : ''} onClick={() => setView('markets')}><LineChart size={19} /> Live market</button>
           <button className={view === 'ipos' ? 'active' : ''} onClick={() => setView('ipos')}><Landmark size={19} /> IPOs</button>
           <button className={view === 'members' ? 'active' : ''} onClick={() => setView('members')}><UsersRound size={19} /> Members<span className="nav-count">{members.length}</span></button>
@@ -848,7 +996,7 @@ function App() {
           <span>Review sector concentration every month.</span>
         </div>
         <button className="sidebar-footer" onClick={() => setView('profile')}>
-          <span className="avatar small">{initials(account.name)}</span>
+          <AccountAvatar account={account} />
           <div><strong>{account.name}</strong><span>{account.role}</span></div>
           <ChevronDown size={14} />
         </button>
@@ -858,29 +1006,22 @@ function App() {
         <header className="topbar">
           <div><p className="eyebrow">{pageMeta[view].eyebrow}</p><h1>{pageMeta[view].title}</h1></div>
           <div className="top-actions">
-            {(view === 'dashboard' || view === 'members') ? (
+            <ThemeToggle theme={theme} onToggle={switchTheme} />
+            {(view === 'dashboard' || view === 'stocks' || view === 'members' || view === 'funds') ? (
               <>
-                <div className={`member-select${uiBusy || marketLoading ? ' loading' : ''}`}>
+                <div className="member-select">
                   <UserRound size={17} />
                   <select
-                    aria-label="Filter dashboard by member"
+                    aria-label="Filter by member"
                     value={selectedMember}
-                    disabled={uiBusy}
-                    onChange={(event) => {
-                      const value = event.target.value
-                      flashUi(() => {
-                        setSelectedMember(value)
-                        setShowAllHoldings(false)
-                        setHoldingSearch('')
-                      })
-                    }}
+                    onChange={(event) => setSelectedMember(event.target.value)}
                   >
                     <option value="all">All members</option>
                     {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
                   </select>
                   <ChevronDown size={15} />
                 </div>
-                <button className="button primary" onClick={() => setModal({ type: 'holding', memberId: selectedMember === 'all' ? undefined : selectedMember })}><Plus size={18} /> Add stock</button>
+                {!canEdit && <span className="access-pill">Read only</span>}
               </>
             ) : view === 'markets' ? (
               <button className={`button secondary${marketLoading ? ' loading' : ''}`} disabled={marketLoading} onClick={() => void refreshMarket()}><RefreshCw size={16} className={marketLoading ? 'spinning' : undefined} /> Refresh</button>
@@ -898,245 +1039,316 @@ function App() {
               <div>
                 <p className="hero-label"><Activity size={15} /> Investment snapshot</p>
                 <h2>{money(portfolio.invested)}</h2>
-                <p>Total amount invested for <strong>{selectedName}</strong></p>
+                <p>
+                  Stocks {shortMoney(portfolio.stocksInvested)} · Mutual funds {shortMoney(portfolio.fundsInvested)}
+                  {' '}for <strong>{selectedName}</strong>
+                </p>
               </div>
               <div className="return-pill positive">
                 <BriefcaseBusiness size={20} />
-                <div><strong>{visibleHoldings.length}</strong><span>stock holdings</span></div>
+                <div>
+                  <strong>{visibleHoldings.length + visibleFunds.length}</strong>
+                  <span>{visibleHoldings.length} stocks · {visibleFunds.length} funds</span>
+                </div>
               </div>
               <div className="hero-orbit orbit-one" /><div className="hero-orbit orbit-two" />
             </section>
 
-            <MarketPulse
-              data={marketData}
-              loading={marketLoading}
-              error={marketError}
-              onRefresh={refreshMarket}
-              onOpenMarkets={() => setView('markets')}
-            />
-
             <section className="metrics-grid">
-              <Metric icon={<WalletCards size={20} />} color="green" label="Amount invested" value={shortMoney(portfolio.invested)} meta="Capital" />
-              <Metric icon={<Trophy size={20} />} color="orange" label="Largest holding" value={topHoldings[0]?.symbol ?? '—'} meta={topHoldings[0] ? shortMoney(topHoldings[0].value) : 'No stocks'} />
-              <Metric icon={<BriefcaseBusiness size={20} />} color="violet" label="Stocks owned" value={String(visibleHoldings.length)} meta={`${sectorData.length} sectors · ${subSectorData.length} sub-sectors`} />
-              <Metric icon={<UsersRound size={20} />} color="blue" label="Active members" value={String(selectedMember === 'all' ? members.length : 1)} meta="Profiles" />
+              <Metric icon={<WalletCards size={20} />} color="green" label="Total invested" value={shortMoney(portfolio.invested)} meta="Stocks + mutual funds" />
+              <Metric icon={<BriefcaseBusiness size={20} />} color="violet" label="Stocks" value={shortMoney(portfolio.stocksInvested)} meta={`${visibleHoldings.length} holdings`} />
+              <Metric icon={<PiggyBank size={20} />} color="orange" label="Mutual funds" value={shortMoney(portfolio.fundsInvested)} meta={`${visibleFunds.length} schemes`} />
+              <Metric icon={<UsersRound size={20} />} color="blue" label="Active members" value={String(members.length)} meta="Profiles" />
             </section>
 
-            {visibleHoldings.length === 0 ? <EmptyState onAdd={() => setModal({ type: 'holding' })} /> : (
+            {visibleHoldings.length === 0 && visibleFunds.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-icon"><BarChart3 size={28} /></div>
+                <h3>No portfolio data yet</h3>
+                <p>Add stocks and mutual funds on their pages. This overview shows graphs only.</p>
+                <div className="empty-actions">
+                  <button className="button primary" onClick={() => setView('stocks')}><BriefcaseBusiness size={17} /> Go to Stocks</button>
+                  <button className="button secondary" onClick={() => setView('funds')}><PiggyBank size={17} /> Go to Mutual funds</button>
+                </div>
+              </div>
+            ) : (
               <>
-                <section className="chart-grid">
-                  <article className="panel">
-                    <PanelHeader title="Sector allocation" subtitle="Invested amount by main sector" />
-                    <div className="donut-layout">
-                      <div className="donut-wrap">
-                        <ResponsiveContainer width="100%" height={250}>
-                          <PieChart>
-                            <Pie data={sectorData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
-                              {sectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
-                            </Pie>
-                            <Tooltip formatter={(value) => money(Number(value))} />
-                          </PieChart>
+                {combinedAllocation.length > 0 && (
+                  <section className="chart-grid">
+                    <article className="panel">
+                      <PanelHeader title="Asset mix" subtitle="Stocks vs mutual funds" />
+                      <div className="donut-layout">
+                        <div className="donut-wrap">
+                          <ResponsiveContainer width="100%" height={250}>
+                            <PieChart>
+                              <Pie data={combinedAllocation} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                                {combinedAllocation.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                              </Pie>
+                              <Tooltip formatter={(value) => money(Number(value))} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                          <div className="donut-center"><strong>{combinedAllocation.length}</strong><span>assets</span></div>
+                        </div>
+                        <div className="legend-list">
+                          {combinedAllocation.map((row) => (
+                            <div className="legend-row" key={row.name}>
+                              <span className="legend-dot" style={{ background: row.color }} />
+                              <span>{row.name}<small>{shortMoney(row.value)}</small></span>
+                              <strong>{portfolio.invested ? ((row.value / portfolio.invested) * 100).toFixed(1) : 0}%</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </article>
+                    <article className="panel">
+                      <PanelHeader title="Broker allocation" subtitle="Capital by broker / app" />
+                      {brokerData.length === 0 ? (
+                        <div className="modal-empty"><p>Add broker on stocks and funds to see this split.</p></div>
+                      ) : (
+                        <div className="donut-layout">
+                          <div className="donut-wrap">
+                            <ResponsiveContainer width="100%" height={250}>
+                              <PieChart>
+                                <Pie data={brokerData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                                  {brokerData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
+                                </Pie>
+                                <Tooltip formatter={(value) => money(Number(value))} />
+                              </PieChart>
+                            </ResponsiveContainer>
+                            <div className="donut-center"><strong>{brokerData.length}</strong><span>brokers</span></div>
+                          </div>
+                          <div className="legend-list">
+                            {brokerData.map((row, index) => (
+                              <div className="legend-row" key={row.name}>
+                                <span className="legend-dot" style={{ background: CHART_COLORS[index % CHART_COLORS.length] }} />
+                                <span>
+                                  {row.name}
+                                  <small>{row.stocks} stocks · {row.funds} funds</small>
+                                </span>
+                                <strong>{portfolio.invested ? ((row.value / portfolio.invested) * 100).toFixed(1) : 0}%</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  </section>
+                )}
+
+                {brokerData.length > 0 && (
+                  <section className="chart-grid">
+                    <article className="panel">
+                      <PanelHeader title="Broker invested" subtitle="Amount held in each broker" />
+                      <div className="bar-chart">
+                        <ResponsiveContainer width="100%" height={Math.max(240, brokerData.length * 46)}>
+                          <BarChart data={brokerData} layout="vertical" margin={{ top: 12, right: 18, left: 8, bottom: 0 }}>
+                            <CartesianGrid horizontal={false} stroke="var(--line)" strokeDasharray="4 4" />
+                            <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 11 }} tickFormatter={(value) => shortMoney(Number(value))} />
+                            <YAxis type="category" dataKey="name" width={110} axisLine={false} tickLine={false} tick={{ fill: 'var(--text-soft)', fontSize: 11 }} />
+                            <Tooltip formatter={(value) => money(Number(value))} cursor={{ fill: 'var(--paper-2)' }} />
+                            <Bar dataKey="value" radius={[0, 7, 7, 0]} maxBarSize={22}>
+                              {brokerData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
+                            </Bar>
+                          </BarChart>
                         </ResponsiveContainer>
-                        <div className="donut-center"><strong>{sectorData.length}</strong><span>sectors</span></div>
                       </div>
-                      <div className="legend-list">
-                        {sectorData.slice(0, 6).map((sector, index) => (
-                          <div className="legend-row" key={sector.name}>
-                            <span className="legend-dot" style={{ background: CHART_COLORS[index % CHART_COLORS.length] }} />
-                            <span>{sector.name}<small>{sector.count} {sector.count === 1 ? 'stock' : 'stocks'}</small></span>
-                            <strong>{portfolio.invested ? ((sector.value / portfolio.invested) * 100).toFixed(1) : 0}%</strong>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </article>
-                  <article className="panel">
-                    <PanelHeader title="Sub-sector allocation" subtitle="Invested amount by sub-sector" />
-                    <div className="donut-layout">
-                      <div className="donut-wrap">
-                        <ResponsiveContainer width="100%" height={250}>
-                          <PieChart>
-                            <Pie data={subSectorData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
-                              {subSectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
-                            </Pie>
-                            <Tooltip formatter={(value) => money(Number(value))} />
-                          </PieChart>
-                        </ResponsiveContainer>
-                        <div className="donut-center"><strong>{subSectorData.length}</strong><span>sub-sectors</span></div>
-                      </div>
-                      <div className="legend-list">
-                        {subSectorData.slice(0, 6).map((sector, index) => (
-                          <div className="legend-row" key={sector.name}>
-                            <span className="legend-dot" style={{ background: CHART_COLORS[index % CHART_COLORS.length] }} />
-                            <span>{sector.name}<small>{sector.count} {sector.count === 1 ? 'stock' : 'stocks'}</small></span>
-                            <strong>{portfolio.invested ? ((sector.value / portfolio.invested) * 100).toFixed(1) : 0}%</strong>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </article>
-                </section>
-
-                <section className="chart-grid sector-count-panel">
-                  <article className="panel">
-                    <PanelHeader title="Stock count by size" subtitle="Large, mid and small cap mix" />
-                    <div className="bar-chart">
-                      <ResponsiveContainer width="100%" height={272}>
-                        <BarChart data={capData} margin={{ top: 15, right: 5, left: -22, bottom: 0 }}>
-                          <CartesianGrid vertical={false} stroke="#eceae4" strokeDasharray="4 4" />
-                          <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#77766f', fontSize: 12 }} />
-                          <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: '#9a9993', fontSize: 11 }} />
-                          <Tooltip cursor={{ fill: '#f5f3ed' }} />
-                          <Bar dataKey="count" radius={[8, 8, 2, 2]} maxBarSize={62}>
-                            {capData.map((entry, index) => <Cell key={entry.name} fill={['#244d3c', '#e8995d', '#d9ba59'][index]} />)}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </article>
-                  <article className="panel">
-                    <PanelHeader title="Stocks by sector" subtitle="Holdings in each main sector" />
-                    <div className="sector-count-chart" style={{ height: Math.max(240, sectorData.length * 42) }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={sectorData} layout="vertical" margin={{ top: 16, right: 22, left: 8, bottom: 0 }}>
-                          <CartesianGrid horizontal={false} stroke="#eceae4" strokeDasharray="4 4" />
-                          <XAxis type="number" allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: '#9a9993', fontSize: 11 }} />
-                          <YAxis type="category" dataKey="name" width={118} axisLine={false} tickLine={false} tick={{ fill: '#686c67', fontSize: 11 }} />
-                          <Tooltip formatter={(value) => [`${Number(value)} ${Number(value) === 1 ? 'stock' : 'stocks'}`, 'Holdings']} cursor={{ fill: '#f5f3ed' }} />
-                          <Bar dataKey="count" radius={[0, 7, 7, 0]} maxBarSize={22}>
-                            {sectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </article>
-                </section>
-
-                <section className="panel sector-count-panel">
-                  <PanelHeader title="Invested by sub-sector" subtitle="Capital allocated across sub-sectors" />
-                  <div className="sector-count-chart" style={{ height: Math.max(240, subSectorData.length * 42) }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={subSectorData} layout="vertical" margin={{ top: 16, right: 22, left: 8, bottom: 0 }}>
-                        <CartesianGrid horizontal={false} stroke="#eceae4" strokeDasharray="4 4" />
-                        <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: '#9a9993', fontSize: 11 }} tickFormatter={(value) => shortMoney(Number(value))} />
-                        <YAxis type="category" dataKey="name" width={150} axisLine={false} tickLine={false} tick={{ fill: '#686c67', fontSize: 11 }} />
-                        <Tooltip formatter={(value) => money(Number(value))} cursor={{ fill: '#f5f3ed' }} />
-                        <Bar dataKey="value" radius={[0, 7, 7, 0]} maxBarSize={22}>
-                          {subSectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </section>
-
-                <section className="holdings-section">
-                  <article className="panel top-holdings-panel">
-                    <PanelHeader title="Top 5 holdings" subtitle="Ranked by amount invested" />
-                    <div className="top-holdings-grid">
-                      {topHoldings.map((holding, index) => {
-                        const max = topHoldings[0]?.value || 1
-                        return (
-                          <div className="top-holding-card" key={holding.symbol}>
-                            <div className="holding-rank">0{index + 1}</div>
-                            <span className="holding-symbol">{holding.symbol}</span>
-                            <span className="holding-company">{holding.company}</span>
-                            <strong>{shortMoney(holding.value)}</strong>
-                            <div className="track"><span style={{ width: `${(holding.value / max) * 100}%`, background: CHART_COLORS[index % CHART_COLORS.length] }} /></div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </article>
-                  <article className="panel holdings-table-panel">
-                    <PanelHeader
-                      title="Stock holdings"
-                      subtitle={holdingSearch ? `${sortedHoldings.length} of ${visibleHoldings.length} stocks match` : `${visibleHoldings.length} stocks in this view`}
-                    />
-                    <div className="holdings-toolbar">
-                      <div className="search-box holdings-search">
-                        <Search size={16} />
-                        <input
-                          value={holdingSearch}
-                          onChange={(event) => {
-                            setHoldingSearch(event.target.value)
-                            setShowAllHoldings(false)
-                          }}
-                          placeholder="Search symbol, company, sector, sub-sector..."
-                          aria-label="Search stock holdings"
-                        />
-                        {holdingSearch && <button className="clear-search" onClick={() => setHoldingSearch('')} aria-label="Clear holdings search"><X size={14} /></button>}
-                      </div>
-                      <div className={`select-shell${uiBusy ? ' loading' : ''}`}>
-                      <select
-                        className="holdings-sort"
-                        value={holdingSort}
-                        disabled={uiBusy}
-                        onChange={(event) => {
-                          const value = event.target.value as HoldingSort
-                          flashUi(() => {
-                            setHoldingSort(value)
-                            setShowAllHoldings(false)
-                          })
-                        }}
-                        aria-label="Sort stock holdings"
-                      >
-                        <option value="invested-desc">Invested: high to low</option>
-                        <option value="invested-asc">Invested: low to high</option>
-                        <option value="symbol-asc">Symbol: A to Z</option>
-                        <option value="quantity-desc">Quantity: high to low</option>
-                        <option value="sector-asc">Sector / sub-sector: A to Z</option>
-                      </select>
-                      </div>
-                      <div className="export-actions">
-                        <button className="button secondary" onClick={() => exportHoldings('csv')} disabled={sortedHoldings.length === 0}><Download size={15} /> CSV</button>
-                        <button className="button secondary" onClick={() => exportHoldings('json')} disabled={sortedHoldings.length === 0}><Download size={15} /> JSON</button>
-                      </div>
-                    </div>
-                    <div className={`table-scroll${uiBusy ? ' is-busy' : ''}`}>
-                      <table>
-                        <thead><tr><th>Stock</th><th>Member</th><th>Quantity</th><th>Invested</th><th /></tr></thead>
-                        <tbody>
-                          {(showAllHoldings ? sortedHoldings : sortedHoldings.slice(0, 6)).map((holding) => {
-                            const owner = members.find((member) => member.id === holding.memberId)
-                            return (
-                              <tr key={holding.id}>
-                                <td>
-                                  <StockLabel symbol={holding.symbol} name={holding.company} />
-                                  <small className="holding-sector-line">{holding.sector} · {holding.subSector}</small>
-                                </td>
-                                <td>{owner?.name.split(' ')[0] ?? '—'}</td>
-                                <td>{holding.quantity}</td>
-                                <td>{shortMoney(investedOf(holding))}</td>
-                                <td><button className="icon-button danger" title="Delete holding" onClick={() => removeHolding(holding)}><Trash2 size={15} /></button></td>
-                              </tr>
-                            )
-                          })}
-                          {sortedHoldings.length === 0 && (
-                            <tr><td className="holdings-no-results" colSpan={5}>No stocks match your search.</td></tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                    {sortedHoldings.length > 6 && (
-                      <div className="holdings-list-footer">
-                        <span>
-                          Showing {showAllHoldings ? sortedHoldings.length : 6} of {sortedHoldings.length} stocks
-                        </span>
-                        <button
-                          className={`button secondary${uiBusy ? ' loading' : ''}`}
-                          disabled={uiBusy}
-                          onClick={() => flashUi(() => setShowAllHoldings(!showAllHoldings))}
-                        >
-                          {uiBusy ? <Loader2 size={15} className="spinning" /> : null}
-                          {showAllHoldings ? 'Show fewer' : `View all ${sortedHoldings.length} stocks`}
+                    </article>
+                    <article className="panel">
+                      <PanelHeader title="Quick links" subtitle="Manage holdings on dedicated pages" />
+                      <div className="dash-links">
+                        <button className="dash-link-card" onClick={() => setView('stocks')}>
+                          <BriefcaseBusiness size={20} />
+                          <strong>Stocks</strong>
+                          <span>{visibleHoldings.length} holdings · {shortMoney(portfolio.stocksInvested)}</span>
+                        </button>
+                        <button className="dash-link-card" onClick={() => setView('funds')}>
+                          <PiggyBank size={20} />
+                          <strong>Mutual funds</strong>
+                          <span>{visibleFunds.length} schemes · {shortMoney(portfolio.fundsInvested)}</span>
                         </button>
                       </div>
-                    )}
-                  </article>
-                </section>
+                      <div className="broker-chip-row">
+                        {brokerData.slice(0, 6).map((row, index) => (
+                          <span className="broker-chip" key={row.name} style={{ borderColor: CHART_COLORS[index % CHART_COLORS.length] }}>
+                            <strong>{row.name}</strong>
+                            <em>{shortMoney(row.value)}</em>
+                          </span>
+                        ))}
+                      </div>
+                    </article>
+                  </section>
+                )}
+
+                {visibleHoldings.length > 0 && (
+                  <>
+                    <section className="chart-grid">
+                      <article className="panel">
+                        <PanelHeader title="Sector allocation" subtitle="Stock capital by sector" />
+                        <div className="donut-layout">
+                          <div className="donut-wrap">
+                            <ResponsiveContainer width="100%" height={250}>
+                              <PieChart>
+                                <Pie data={sectorData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                                  {sectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
+                                </Pie>
+                                <Tooltip formatter={(value) => money(Number(value))} />
+                              </PieChart>
+                            </ResponsiveContainer>
+                            <div className="donut-center"><strong>{sectorData.length}</strong><span>sectors</span></div>
+                          </div>
+                          <div className="legend-list">
+                            {sectorData.slice(0, 6).map((sector, index) => (
+                              <div className="legend-row" key={sector.name}>
+                                <span className="legend-dot" style={{ background: CHART_COLORS[index % CHART_COLORS.length] }} />
+                                <span>{sector.name}<small>{sector.count} {sector.count === 1 ? 'stock' : 'stocks'}</small></span>
+                                <strong>{portfolio.stocksInvested ? ((sector.value / portfolio.stocksInvested) * 100).toFixed(1) : 0}%</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </article>
+                      <article className="panel">
+                        <PanelHeader title="Sub-sector allocation" subtitle="Stock capital by sub-sector" />
+                        <div className="donut-layout">
+                          <div className="donut-wrap">
+                            <ResponsiveContainer width="100%" height={250}>
+                              <PieChart>
+                                <Pie data={subSectorData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                                  {subSectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
+                                </Pie>
+                                <Tooltip formatter={(value) => money(Number(value))} />
+                              </PieChart>
+                            </ResponsiveContainer>
+                            <div className="donut-center"><strong>{subSectorData.length}</strong><span>sub-sectors</span></div>
+                          </div>
+                          <div className="legend-list">
+                            {subSectorData.slice(0, 6).map((sector, index) => (
+                              <div className="legend-row" key={sector.name}>
+                                <span className="legend-dot" style={{ background: CHART_COLORS[index % CHART_COLORS.length] }} />
+                                <span>{sector.name}<small>{sector.count} {sector.count === 1 ? 'stock' : 'stocks'}</small></span>
+                                <strong>{portfolio.stocksInvested ? ((sector.value / portfolio.stocksInvested) * 100).toFixed(1) : 0}%</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </article>
+                    </section>
+
+                    <section className="chart-grid sector-count-panel">
+                      <article className="panel">
+                        <PanelHeader title="Stock count by size" subtitle="Large, mid and small cap mix" />
+                        <div className="bar-chart">
+                          <ResponsiveContainer width="100%" height={272}>
+                            <BarChart data={capData} margin={{ top: 15, right: 5, left: -22, bottom: 0 }}>
+                              <CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="4 4" />
+                              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 12 }} />
+                              <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 11 }} />
+                              <Tooltip cursor={{ fill: 'var(--paper-2)' }} />
+                              <Bar dataKey="count" radius={[8, 8, 2, 2]} maxBarSize={62}>
+                                {capData.map((entry, index) => <Cell key={entry.name} fill={['#244d3c', '#e8995d', '#d9ba59'][index]} />)}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </article>
+                      <article className="panel">
+                        <PanelHeader title="Stocks by sector" subtitle="Holdings in each main sector" />
+                        <div className="sector-count-chart" style={{ height: Math.max(240, sectorData.length * 42) }}>
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={sectorData} layout="vertical" margin={{ top: 16, right: 22, left: 8, bottom: 0 }}>
+                              <CartesianGrid horizontal={false} stroke="var(--line)" strokeDasharray="4 4" />
+                              <XAxis type="number" allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 11 }} />
+                              <YAxis type="category" dataKey="name" width={118} axisLine={false} tickLine={false} tick={{ fill: 'var(--text-soft)', fontSize: 11 }} />
+                              <Tooltip formatter={(value) => [`${Number(value)} ${Number(value) === 1 ? 'stock' : 'stocks'}`, 'Holdings']} cursor={{ fill: 'var(--paper-2)' }} />
+                              <Bar dataKey="count" radius={[0, 7, 7, 0]} maxBarSize={22}>
+                                {sectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
+                              </Bar>
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </article>
+                    </section>
+                  </>
+                )}
+
+                {(fundAllocation.length > 0 || sipTrend.length > 0) && (
+                  <section className="chart-grid">
+                    <article className="panel">
+                      <PanelHeader title="Mutual fund allocation" subtitle="Total SIP invested by scheme" />
+                      {fundAllocation.length === 0 ? (
+                        <div className="modal-empty"><p>Add SIP months to see fund allocation.</p></div>
+                      ) : (
+                        <div className="donut-layout">
+                          <div className="donut-wrap">
+                            <ResponsiveContainer width="100%" height={250}>
+                              <PieChart>
+                                <Pie data={fundAllocation} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                                  {fundAllocation.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                                </Pie>
+                                <Tooltip formatter={(value) => money(Number(value))} />
+                              </PieChart>
+                            </ResponsiveContainer>
+                            <div className="donut-center"><strong>{fundAllocation.length}</strong><span>funds</span></div>
+                          </div>
+                          <div className="legend-list">
+                            {fundAllocation.slice(0, 6).map((fund) => (
+                              <div className="legend-row" key={fund.name}>
+                                <span className="legend-dot" style={{ background: fund.color }} />
+                                <span>{fund.name}<small>{shortMoney(fund.value)}</small></span>
+                                <strong>{portfolio.fundsInvested ? ((fund.value / portfolio.fundsInvested) * 100).toFixed(1) : 0}%</strong>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                    <article className="panel">
+                      <PanelHeader title="SIP by month" subtitle="Last 12 months across all funds" />
+                      {sipTrend.length === 0 ? (
+                        <div className="modal-empty"><p>Monthly SIP amounts will chart here.</p></div>
+                      ) : (
+                        <div className="bar-chart">
+                          <ResponsiveContainer width="100%" height={250}>
+                            <BarChart data={sipTrend}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+                              <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--muted)' }} axisLine={false} tickLine={false} />
+                              <YAxis tick={{ fontSize: 10, fill: 'var(--muted)' }} axisLine={false} tickLine={false} tickFormatter={(value) => shortMoney(Number(value))} width={56} />
+                              <Tooltip formatter={(value) => money(Number(value))} />
+                              <Bar dataKey="value" fill="#e8995d" radius={[6, 6, 0, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+                    </article>
+                  </section>
+                )}
               </>
             )}
           </div>
+        )}
+
+        {view === 'stocks' && (
+          <StocksPage
+            holdings={holdings}
+            members={members}
+            selectedMember={selectedMember}
+            canEdit={canEdit}
+            onAdd={(memberId) => setModal({ type: 'holding', memberId })}
+            onRemove={removeHolding}
+          />
+        )}
+
+        {view === 'funds' && (
+          <MutualFundsPage
+            funds={mutualFunds}
+            members={members}
+            selectedMember={selectedMember}
+            canEdit={canEdit}
+            onCreateFund={addMutualFund}
+            onDeleteFund={removeMutualFund}
+            onAddSip={addSip}
+            onDeleteSip={removeSip}
+          />
         )}
 
         {view === 'ipos' && (
@@ -1161,7 +1373,9 @@ function App() {
           <div className="page members-page">
             <section className="members-toolbar">
               <div className="search-box"><Search size={17} /><input value={memberSearch} onChange={(event) => setMemberSearch(event.target.value)} placeholder="Search members..." /></div>
-              <button className="button secondary" onClick={() => setModal({ type: 'member' })}><Plus size={18} /> New member</button>
+              {canManageMembers && (
+                <button className="button secondary" onClick={() => setModal({ type: 'member' })}><Plus size={18} /> New member</button>
+              )}
             </section>
             <section className="member-grid">
               {filteredMembers.map((member) => {
@@ -1169,7 +1383,22 @@ function App() {
                 const invested = memberHoldings.reduce((sum, holding) => sum + investedOf(holding), 0)
                 return (
                   <article className="member-card" key={member.id}>
-                    <div className="member-card-head"><span className="avatar" style={{ background: member.color }}>{initials(member.name)}</span><button className="icon-button danger" title="Delete member" onClick={() => removeMember(member)}><Trash2 size={16} /></button></div>
+                    <div className="member-card-head">
+                      <MemberAvatar member={member} />
+                      <div className="member-card-actions">
+                        {canManageMembers && (
+                          <button className="icon-button" title="Edit member" onClick={() => setModal({ type: 'edit-member', member })}><Pencil size={16} /></button>
+                        )}
+                        {canManageMembers && !member.isOwner && (
+                          <button className="icon-button danger" title="Delete member" onClick={() => removeMember(member)}><Trash2 size={16} /></button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="member-badges">
+                      {member.isDefault && <span className="member-badge default">Default</span>}
+                      <span className={`member-badge ${member.access}`}>{member.access === 'full' ? 'Full access' : 'Read only'}</span>
+                      {member.canLogin && <span className="member-badge login">Login on</span>}
+                    </div>
                     <h3>{member.name}</h3><p>{member.email}</p>
                     <div className="member-stat-row">
                       <div><span>Amount invested</span><strong>{shortMoney(invested)}</strong></div>
@@ -1180,11 +1409,15 @@ function App() {
                       {memberHoldings.length > 3 && <span className="more-stock">+{memberHoldings.length - 3}</span>}
                       {memberHoldings.length === 0 && <em>No stocks added</em>}
                     </div>
-                    <button className="member-add" onClick={() => setModal({ type: 'holding', memberId: member.id })}><Plus size={16} /> Add stock</button>
+                    {canEdit && (
+                      <button className="member-add" onClick={() => { setSelectedMember(member.id); setView('stocks'); setModal({ type: 'holding', memberId: member.id }) }}><Plus size={16} /> Add stock</button>
+                    )}
                   </article>
                 )
               })}
-              <button className="new-member-card" onClick={() => setModal({ type: 'member' })}><span><Plus size={25} /></span><strong>Add new member</strong><small>Create another portfolio</small></button>
+              {canManageMembers && (
+                <button className="new-member-card" onClick={() => setModal({ type: 'member' })}><span><Plus size={25} /></span><strong>Add new member</strong><small>Create another portfolio</small></button>
+              )}
             </section>
           </div>
         )}
@@ -1192,7 +1425,15 @@ function App() {
         {view === 'profile' && (
           <ProfileScreen
             account={account}
-            onSave={async (next) => setAccount(await saveAccount(next))}
+            onSave={async (next) => {
+              const saved = await saveAccount(next)
+              setAccount(saved)
+              setMembers((current) => current.map((member) => (
+                member.id === saved.memberId || member.isOwner
+                  ? { ...member, name: saved.name, email: saved.email }
+                  : member
+              )))
+            }}
             onChangePassword={() => setView('password')}
             onLogout={logout}
           />
@@ -1207,15 +1448,26 @@ function App() {
 
         <nav className="mobile-nav">
           <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}><LayoutDashboard size={20} /><span>Overview</span></button>
-          <button className={view === 'markets' ? 'active' : ''} onClick={() => setView('markets')}><LineChart size={20} /><span>Markets</span></button>
-          <button className={view === 'ipos' ? 'active' : ''} onClick={() => setView('ipos')}><Landmark size={20} /><span>IPOs</span></button>
+          <button className={view === 'stocks' ? 'active' : ''} onClick={() => setView('stocks')}><BriefcaseBusiness size={20} /><span>Stocks</span></button>
+          <button className={view === 'funds' ? 'active' : ''} onClick={() => setView('funds')}><PiggyBank size={20} /><span>Funds</span></button>
           <button className={view === 'members' ? 'active' : ''} onClick={() => setView('members')}><UsersRound size={20} /><span>Members</span></button>
           <button className={view === 'profile' || view === 'password' ? 'active' : ''} onClick={() => setView('profile')}><UserRound size={20} /><span>Profile</span></button>
         </nav>
       </main>
 
-      {modal?.type === 'member' && <MemberModal onClose={() => setModal(null)} onSave={addMember} />}
-      {modal?.type === 'holding' && <HoldingModal members={members} initialMemberId={modal.memberId} onClose={() => setModal(null)} onSave={addHolding} />}
+      {modal?.type === 'member' && (
+        <MemberModal onClose={() => setModal(null)} onSave={addMember} />
+      )}
+      {modal?.type === 'edit-member' && (
+        <MemberModal
+          member={modal.member}
+          onClose={() => setModal(null)}
+          onSave={(payload, image) => saveMember(modal.member.id, payload, image)}
+        />
+      )}
+      {modal?.type === 'holding' && canEdit && (
+        <HoldingModal members={members} initialMemberId={modal.memberId} onClose={() => setModal(null)} onSave={addHolding} />
+      )}
     </div>
   )
 }
@@ -1255,7 +1507,7 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
         <form className="auth-card" onSubmit={(event) => void submit(event)}>
           <p className="eyebrow">Welcome back</p>
           <h2>Sign in to Folio</h2>
-          <p className="auth-intro">Enter your account details to continue.</p>
+          <p className="auth-intro">Admin or member login — use the email and password set for your account.</p>
           {error && <div className="form-alert">{error}</div>}
           <label>Email address<div className="input-with-icon"><Mail size={17} /><input autoFocus required type="email" value={email} onChange={(event) => { setEmail(event.target.value); setError('') }} placeholder="you@example.com" /></div></label>
           <label>Password<div className="input-with-icon"><LockKeyhole size={17} /><input required type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => { setPassword(event.target.value); setError('') }} placeholder="Enter your password" /><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label>
@@ -1282,6 +1534,7 @@ function ProfileScreen({ account, onSave, onChangePassword, onLogout }: {
   const set = (key: 'name' | 'email' | 'phone', value: string) => setForm({ ...form, [key]: value })
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    if (!account.isAdmin) return
     setSaving(true)
     setError('')
     try {
@@ -1295,30 +1548,41 @@ function ProfileScreen({ account, onSave, onChangePassword, onLogout }: {
     }
   }
 
+  const accessLabel = account.isAdmin
+    ? 'Administrator'
+    : account.access === 'full'
+      ? 'Member · Full access'
+      : 'Member · Read only'
+
   return (
     <div className="page settings-page">
       <section className="profile-summary panel">
-        <span className="profile-avatar">{initials(account.name)}</span>
-        <div><p className="eyebrow">Signed in as</p><h2>{account.name}</h2><span>{account.role}</span></div>
-        <span className="account-badge"><ShieldCheck size={14} /> Verified account</span>
+        <AccountAvatar account={account} size="profile" />
+        <div><p className="eyebrow">Signed in as</p><h2>{account.name}</h2><span>{accessLabel}</span></div>
+        <span className="account-badge"><ShieldCheck size={14} /> {account.isAdmin ? 'Admin account' : 'Member login'}</span>
       </section>
       <div className="settings-grid">
         <form className="settings-card panel" onSubmit={(event) => void submit(event)}>
-          <PanelHeader title="Personal information" subtitle="Update your account details" />
+          <PanelHeader
+            title="Personal information"
+            subtitle={account.isAdmin ? 'Update your account details' : 'Your member profile is managed by the admin'}
+          />
           {saved && <div className="success-alert">Profile updated successfully.</div>}
           {error && <div className="form-alert">{error}</div>}
           <div className="settings-fields">
-            <label>Full name<input required value={form.name} onChange={(event) => set('name', event.target.value)} /></label>
-            <label>Email address<input required type="email" value={form.email} onChange={(event) => set('email', event.target.value)} /></label>
-            <label>Phone number<input value={form.phone} onChange={(event) => set('phone', event.target.value)} /></label>
-            <label>Account role<input disabled value={form.role} /></label>
+            <label>Full name<input required value={form.name} onChange={(event) => set('name', event.target.value)} disabled={!account.isAdmin} /></label>
+            <label>Email address<input required type="email" value={form.email} onChange={(event) => set('email', event.target.value)} disabled={!account.isAdmin} /></label>
+            <label>Phone number<input value={form.phone} onChange={(event) => set('phone', event.target.value)} disabled={!account.isAdmin} /></label>
+            <label>Account role<input disabled value={accessLabel} /></label>
           </div>
-          <div className="settings-actions">
-            <button className={`button primary${saving ? ' loading' : ''}`} disabled={saving}>
-              {saving ? <Loader2 size={17} className="spinning" /> : <Save size={17} />}
-              {saving ? 'Saving…' : 'Save changes'}
-            </button>
-          </div>
+          {account.isAdmin && (
+            <div className="settings-actions">
+              <button className={`button primary${saving ? ' loading' : ''}`} disabled={saving}>
+                {saving ? <Loader2 size={17} className="spinning" /> : <Save size={17} />}
+                {saving ? 'Saving…' : 'Save changes'}
+              </button>
+            </div>
+          )}
         </form>
         <aside className="security-card panel">
           <span className="security-icon"><KeyRound size={23} /></span>
@@ -1675,99 +1939,150 @@ function MoverTable({ rows, loading, empty, positive = false }: {
   )
 }
 
-function MarketPulse({ data, loading, error, onRefresh, onOpenMarkets }: {
-  data: MarketOverview | null
-  loading: boolean
-  error: string
-  onRefresh: () => void | Promise<void>
-  onOpenMarkets: () => void
-}) {
-  const indiaVix = data?.extras.find((item) => item.name === 'India VIX')
-  const usdInr = data?.extras.find((item) => item.name === 'USD/INR')
-  const items = data ? [
-    { name: 'NIFTY 50', quote: data.indices.nse },
-    { name: 'SENSEX', quote: data.indices.bse },
-    { name: 'GIFT Nifty', quote: data.indices.giftnifty },
-    ...(indiaVix ? [{ name: 'India VIX', quote: indiaVix }] : []),
-    ...(usdInr ? [{ name: 'USD / INR', quote: usdInr }] : []),
-  ].flatMap((item) => (
-    item.quote && Number.isFinite(item.quote.price)
-      ? [{ name: item.name, price: item.quote.price, change: item.quote.change }]
-      : []
-  )) : []
-  const marketIsLive = Boolean(data?.indices.nse?.isLive || data?.indices.bse?.isLive)
-  const updatedAt = data?.timestamp
-    ? new Date(data.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
-    : ''
-
-  return (
-    <section className="panel market-pulse">
-      <div className="market-pulse-head">
-        <div>
-          <div className="market-title-row">
-            <h3>Market pulse</h3>
-            {data && <span className={`market-status ${marketIsLive ? 'live' : ''}`}><i />{marketIsLive ? 'Live market' : 'Market closed'}</span>}
-          </div>
-          <p>Indian indices and key market indicators</p>
-        </div>
-        <div className="market-head-actions">
-          {updatedAt && <span>Updated {updatedAt} IST</span>}
-          <button className="text-link" onClick={onOpenMarkets}>View full market</button>
-          <button className={`icon-button refresh-market ${loading ? 'loading' : ''}`} disabled={loading} onClick={() => void onRefresh()} aria-label="Refresh market data" title="Refresh market data"><RefreshCw size={16} className={loading ? 'spinning' : undefined} /></button>
-        </div>
-      </div>
-
-      {error && !data ? (
-        <div className="market-error"><span>{error}</span><button onClick={() => void onRefresh()}>Try again</button></div>
-      ) : (
-        <div className="market-strip">
-          {(loading && !data ? Array.from({ length: 5 }, () => ({ skeleton: true })) : items).map((item, index) => (
-            'name' in item ? (
-              <div className="market-tile" key={item.name}>
-                <span>{item.name}</span>
-                <strong>{inrPrice(item.price)}</strong>
-                <small className={item.change >= 0 ? 'up' : 'down'}>
-                  {item.change >= 0 ? <ArrowUpRight size={13} /> : <ArrowDownRight size={13} />}
-                  {signedPercent(item.change)}
-                </small>
-              </div>
-            ) : <div className="market-tile skeleton" key={index}><span /><strong /><small /></div>
-          ))}
-        </div>
-      )}
-      <div className="market-source">
-        Auto-refreshes every minute · Data for information only · <a href="https://www.nseindia.com/" target="_blank" rel="noreferrer">NSE</a>
-      </div>
-    </section>
-  )
-}
-
 function Metric({ icon, color, label, value, meta, valueClass = '' }: { icon: React.ReactNode; color: string; label: string; value: string; meta: string; valueClass?: string }) {
   return <article className="metric-card"><span className={`metric-icon ${color}`}>{icon}</span><div><p>{label}</p><h3 className={valueClass}>{value}</h3></div><span className="metric-meta">{meta}</span></article>
-}
-
-function EmptyState({ onAdd }: { onAdd: () => void }) {
-  return <div className="empty-state"><div className="empty-icon"><BarChart3 size={28} /></div><h3>No holdings yet</h3><p>Add a stock to start seeing portfolio insights.</p><button className="button primary" onClick={onAdd}><Plus size={17} /> Add stock</button></div>
 }
 
 function PanelHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return <div className="panel-header"><div><h3>{title}</h3><p>{subtitle}</p></div><span className="panel-menu">•••</span></div>
 }
 
-function MemberModal({ onClose, onSave }: { onClose: () => void; onSave: (member: Omit<Member, 'id' | 'joined' | 'color'>) => Promise<void> }) {
-  const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
+function MemberModal({
+  member,
+  onClose,
+  onSave,
+}: {
+  member?: Member
+  onClose: () => void
+  onSave: (member: MemberInput, image?: File | null) => Promise<void>
+}) {
+  const editing = Boolean(member)
+  const [name, setName] = useState(member?.name ?? '')
+  const [email, setEmail] = useState(member?.email ?? '')
+  const isOwner = Boolean(member?.isOwner)
+  const [access, setAccess] = useState<MemberAccess>(member?.access ?? 'readonly')
+  const [canLogin, setCanLogin] = useState(member?.canLogin ?? false)
+  const [password, setPassword] = useState('')
+  const [imagePreview, setImagePreview] = useState(member?.image ?? null)
+  const [pendingImage, setPendingImage] = useState<File | null>(null)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (name.trim() && email.trim()) await onSave({ name: name.trim(), email: email.trim() })
+    if (!name.trim() || !email.trim()) return
+    if (!isOwner && canLogin && !editing && password.length < 8) {
+      setError('Password must be at least 8 characters to enable login.')
+      return
+    }
+    if (!isOwner && canLogin && editing && password && password.length < 8) {
+      setError('Password must be at least 8 characters.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      const payload: MemberInput = {
+        name: name.trim(),
+        email: email.trim(),
+        access: isOwner ? 'full' : access,
+        canLogin: isOwner ? false : canLogin,
+        isDefault: isOwner ? true : false,
+      }
+      if (!isOwner && canLogin && password) payload.password = password
+      await onSave(payload, pendingImage)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not save member.')
+      setSaving(false)
+    }
   }
+
+  const onPickImage = (file: File | null) => {
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setError('Choose an image file.')
+      return
+    }
+    setPendingImage(file)
+    setImagePreview(URL.createObjectURL(file))
+    setError('')
+  }
+
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <form className="modal" onSubmit={(event) => void submit(event)}>
-        <div className="modal-head"><div><p className="eyebrow">Investor profile</p><h2>Add a member</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={20} /></button></div>
-        <label>Full name<input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Ananya Rao" /></label>
-        <label>Email address<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="ananya@example.com" /></label>
-        <div className="modal-actions"><button type="button" className="button ghost" onClick={onClose}>Cancel</button><button className="button primary">Create member</button></div>
+      <form className="modal member-modal" onSubmit={(event) => void submit(event)}>
+        <div className="modal-head">
+          <div>
+            <p className="eyebrow">Investor profile</p>
+            <h2>{editing ? 'Edit member' : 'Add a member'}</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        <div className="member-image-field">
+          <button
+            type="button"
+            className="member-image-picker"
+            onClick={() => fileRef.current?.click()}
+            style={imagePreview ? { backgroundImage: `url(${imagePreview})` } : { background: member?.color ?? '#244d3c' }}
+          >
+            {!imagePreview && <span>{initials(name || 'Member')}</span>}
+            <span className="member-image-overlay"><Camera size={16} /> Upload</span>
+          </button>
+          <div>
+            <strong>Profile photo</strong>
+            <p>Optional JPG or PNG, up to 5 MB.</p>
+          </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(event) => onPickImage(event.target.files?.[0] ?? null)}
+          />
+        </div>
+
+        <label>Full name<input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Ananya Rao" disabled={isOwner} /></label>
+        <label>Email address<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="ananya@example.com" disabled={isOwner} /></label>
+
+        {isOwner ? (
+          <p className="member-owner-note">This is your account member. It stays the default and uses your admin login.</p>
+        ) : (
+          <>
+            <label>Access level
+              <select value={access} onChange={(event) => setAccess(event.target.value as MemberAccess)}>
+                <option value="readonly">Read only — view portfolio</option>
+                <option value="full">Full access — add and remove stocks</option>
+              </select>
+            </label>
+
+            <label className="check-row">
+              <input type="checkbox" checked={canLogin} onChange={(event) => setCanLogin(event.target.checked)} />
+              <span>Enable login for this member</span>
+            </label>
+
+            {canLogin && (
+              <label>
+                {editing ? 'Password (leave blank to keep current)' : 'Login password'}
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder={editing ? '••••••••' : 'At least 8 characters'}
+                  minLength={editing ? undefined : 8}
+                  required={!editing}
+                />
+              </label>
+            )}
+          </>
+        )}
+
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="button ghost" onClick={onClose}>Cancel</button>
+          <button className="button primary" disabled={saving}>{editing ? 'Save changes' : 'Create member'}</button>
+        </div>
       </form>
     </div>
   )
@@ -1780,12 +2095,13 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
   onSave: (holding: Omit<Holding, 'id'>) => Promise<void>
 }) {
   const [form, setForm] = useState({
-    memberId: initialMemberId ?? members[0]?.id ?? '',
+    memberId: initialMemberId ?? members.find((item) => item.isDefault)?.id ?? members[0]?.id ?? '',
     symbol: '',
     company: '',
     sector: '',
     subSector: '',
     cap: '' as MarketCap | '',
+    broker: 'Groww' as Broker,
     quantity: '',
     avgPrice: '',
   })
@@ -1951,6 +2267,7 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
       sector: form.sector,
       subSector: form.subSector,
       cap: form.cap || 'Large',
+      broker: form.broker || 'Groww',
       quantity: Number(form.quantity),
       avgPrice: Number(form.avgPrice),
     })
@@ -1962,13 +2279,18 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
         <div className="modal-head"><div><p className="eyebrow">New holding</p><h2>Add a stock</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={20} /></button></div>
         {members.length === 0 ? <div className="modal-empty"><Building2 size={24} /><p>Create a member before adding a stock.</p></div> : (
           <>
-            <label className="full-field">Member
-              <div className={`select-shell${lookingUp ? ' loading' : ''}`}>
-                <select required value={form.memberId} onChange={(event) => set('memberId', event.target.value)}>{members.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select>
-              </div>
-            </label>
             <div className="form-grid">
-              <div className="stock-search-field" ref={searchBoxRef}>
+              <label>Member
+                <div className={`select-shell${lookingUp ? ' loading' : ''}`}>
+                  <select required value={form.memberId} onChange={(event) => set('memberId', event.target.value)}>{members.map((member) => <option value={member.id} key={member.id}>{member.name}</option>)}</select>
+                </div>
+              </label>
+              <label>Broker
+                <select required value={form.broker} onChange={(event) => set('broker', event.target.value)}>
+                  {BROKERS.map((broker) => <option key={broker} value={broker}>{broker}</option>)}
+                </select>
+              </label>
+              <div className="stock-search-field full-field" ref={searchBoxRef}>
                 <label htmlFor="stock-search">Search stock</label>
                 <div className="stock-combobox-wrap">
                   <div className={`stock-combobox${open ? ' open' : ''}`}>

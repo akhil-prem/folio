@@ -5,29 +5,33 @@ from django.dispatch import receiver
 from rest_framework.authtoken.models import Token
 
 from .models import Profile
+from .serializers import ensure_default_member
 
 
 def ensure_bootstrap_user():
+    """Create a bootstrap admin only when the database has no staff users yet."""
+    User = get_user_model()
+    existing_admin = User.objects.filter(is_staff=True).order_by("id").first()
+    if existing_admin is not None:
+        Profile.objects.get_or_create(user=existing_admin, defaults={"role": "Administrator"})
+        ensure_default_member(existing_admin)
+        return existing_admin
+
     email = settings.BOOTSTRAP_EMAIL
     password = settings.BOOTSTRAP_PASSWORD
     name = settings.BOOTSTRAP_NAME
-    User = get_user_model()
-    user, created = User.objects.get_or_create(
+    user = User.objects.create_user(
         username=email,
-        defaults={"email": email, "first_name": name, "is_staff": True, "is_superuser": True},
+        email=email,
+        first_name=name,
+        password=password,
     )
-    if created:
-        user.set_password(password)
-        user.save()
-    else:
-        if not user.email:
-            user.email = email
-            user.save(update_fields=["email"])
-        if not user.check_password(password) and created:
-            user.set_password(password)
-            user.save()
+    user.is_staff = True
+    user.is_superuser = True
+    user.save(update_fields=["is_staff", "is_superuser"])
     Profile.objects.get_or_create(user=user, defaults={"role": "Administrator"})
     Token.objects.get_or_create(user=user)
+    ensure_default_member(user)
     return user
 
 

@@ -517,3 +517,418 @@ def stock_quote(symbol):
         raise LookupError("Stock not found")
     _remember(f"stock-built-{symbol}", 200, json.dumps(payload), "application/json")
     return payload
+
+
+def _normalize_symbol(symbol: str) -> str:
+    return re.sub(r"[^A-Z0-9.&-]", "", (symbol or "").strip().upper())
+
+
+def resolve_stock_search_id(symbol: str, search_id: str = "") -> str:
+    search_id = (search_id or "").strip()
+    if search_id:
+        return search_id
+    symbol = _normalize_symbol(symbol)
+    if not symbol:
+        return ""
+    payload = _groww_get_json(
+        "https://groww.in/v1/api/search/v1/entity"
+        f"?app=false&entity_type=Stocks&page=0&q={quote(symbol, safe='')}&size=12&web=true",
+        ttl=60,
+        key=f"stock-search-id-{symbol.lower()}",
+    )
+    fallback = ""
+    for row in payload.get("content") or []:
+        entity = (row.get("entity_type") or "").lower()
+        if entity and entity not in {"stocks", "stock"}:
+            continue
+        sid = (row.get("search_id") or row.get("id") or "").strip()
+        nse = (row.get("nse_scrip_code") or "").strip().upper()
+        title = (row.get("title") or row.get("company_short_name") or "").strip().upper()
+        if not sid:
+            continue
+        if nse == symbol or title == symbol:
+            return sid
+        if not fallback:
+            fallback = sid
+    return fallback
+
+
+def _groww_live_price(symbol: str):
+    symbol = _normalize_symbol(symbol)
+    if not symbol:
+        return {}
+    try:
+        return _groww_get_json(
+            f"https://groww.in/v1/api/stocks_data/v1/tr_live_prices/exchange/NSE/segment/CASH/{quote(symbol, safe='')}/latest",
+            ttl=30,
+            key=f"stock-live-{symbol}",
+            timeout=15,
+        )
+    except Exception:
+        return {}
+
+
+def _parse_shareholding(raw):
+    if not isinstance(raw, dict) or not raw:
+        return []
+    # Prefer newest quarter key (Groww uses "Jun '26" style)
+    quarter = next(iter(raw.keys()))
+    block = raw.get(quarter) or {}
+    promoters = block.get("promoters") or {}
+    promoter_pct = 0.0
+    for part in promoters.values():
+        if isinstance(part, dict):
+            promoter_pct += _as_float(part.get("percent")) or 0.0
+    dii = block.get("otherDomesticInstitutions") or {}
+    dii_pct = 0.0
+    for part in dii.values():
+        if isinstance(part, dict):
+            dii_pct += _as_float(part.get("percent")) or 0.0
+    rows = [
+        ("Promoters", promoter_pct),
+        ("FII", _as_float((block.get("foreignInstitutions") or {}).get("percent")) or 0.0),
+        ("Mutual funds", _as_float((block.get("mutualFunds") or {}).get("percent")) or 0.0),
+        ("DII / Insurance", dii_pct),
+        ("Retail & others", _as_float((block.get("retailAndOthers") or {}).get("percent")) or 0.0),
+    ]
+    return [{"name": name, "value": round(value, 2)} for name, value in rows if value > 0.01]
+
+
+def _parse_financials(raw):
+    consolidated = (raw or {}).get("CONSOLIDATED") if isinstance(raw, dict) else None
+    if not isinstance(consolidated, list):
+        return {"quarters": [], "rows": []}
+    quarters = []
+    rows = []
+    for item in consolidated[:6]:
+        title = (item.get("title") or "").strip()
+        quarterly = item.get("quarterly") or {}
+        if not title or not isinstance(quarterly, dict) or not quarterly:
+            continue
+        if not quarters:
+            quarters = list(quarterly.keys())[-4:]
+        rows.append(
+            {
+                "title": title,
+                "values": [_as_float(quarterly.get(q)) for q in quarters],
+            }
+        )
+    return {"quarters": quarters, "rows": rows}
+
+
+def stock_detail(symbol: str, search_id: str = ""):
+    symbol = _normalize_symbol(symbol)
+    search_id = (search_id or "").strip()
+    if not symbol and not search_id:
+        raise LookupError("Stock not found")
+    resolved_id = resolve_stock_search_id(symbol, search_id)
+    if not resolved_id:
+        raise LookupError("Stock not found")
+    company = _groww_get_json(
+        f"https://groww.in/v1/api/stocks_data/v1/company/search_id/{quote(resolved_id, safe='')}",
+        ttl=30 * 60,
+        key=f"stock-company-{resolved_id}",
+        timeout=30,
+    )
+    header = company.get("header") or {}
+    details = company.get("details") or {}
+    live = _groww_live_price(header.get("nseScriptCode") or symbol)
+    price_data = ((company.get("priceData") or {}).get("nse") or {})
+    fundamentals = [
+        {"name": row.get("name") or "", "value": row.get("value") or ""}
+        for row in (company.get("fundamentals") or [])
+        if isinstance(row, dict) and (row.get("name") or row.get("value"))
+    ]
+    funds = []
+    for row in company.get("fundsInvested") or []:
+        if not isinstance(row, dict):
+            continue
+        name = (row.get("name") or "").strip()
+        if not name:
+            continue
+        funds.append(
+            {
+                "name": name,
+                "searchId": row.get("searchId") or "",
+                "aumPercent": _as_float(row.get("investedAumPercent")),
+                "return3y": _as_float(row.get("return3y")),
+            }
+        )
+    ltp = _as_float(live.get("ltp"))
+    change = _as_float(live.get("dayChange"))
+    change_pct = _as_float(live.get("dayChangePerc"))
+    return {
+        "symbol": header.get("nseScriptCode") or symbol,
+        "searchId": header.get("searchId") or resolved_id,
+        "name": header.get("displayName") or details.get("fullName") or symbol,
+        "shortName": header.get("shortName") or symbol,
+        "isin": header.get("isin") or "",
+        "industry": header.get("industryName") or "",
+        "logoUrl": header.get("logoUrl") or "",
+        "exchange": "NSE",
+        "ltp": ltp,
+        "change": change,
+        "changePct": change_pct,
+        "open": _as_float(live.get("open")),
+        "high": _as_float(live.get("high")),
+        "low": _as_float(live.get("low")),
+        "prevClose": _as_float(live.get("close")),
+        "volume": _as_float(live.get("volume")),
+        "yearHigh": _as_float(live.get("yearHighPrice") or price_data.get("yearHighPrice")),
+        "yearLow": _as_float(live.get("yearLowPrice") or price_data.get("yearLowPrice")),
+        "upperCircuit": _as_float(live.get("highPriceRange")),
+        "lowerCircuit": _as_float(live.get("lowPriceRange")),
+        "ceo": details.get("ceo") or details.get("managingDirector") or "",
+        "foundedYear": details.get("foundedYear") or "",
+        "summary": details.get("businessSummary") or "",
+        "fundamentals": fundamentals,
+        "shareholding": _parse_shareholding(company.get("shareHoldingPattern") or company.get("shareholdingPatternV2")),
+        "financials": _parse_financials(company.get("financialStatementV2") or company.get("financialStatement")),
+        "fundsInvested": funds[:8],
+    }
+
+
+def stock_price_history(symbol: str):
+    symbol = _normalize_symbol(symbol)
+    if not symbol:
+        raise LookupError("Stock not found")
+    payload = _get_json(
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{quote(symbol + '.NS', safe='')}?interval=1d&range=max"
+    )
+    try:
+        result = payload["chart"]["result"][0]
+        timestamps = result.get("timestamp") or []
+        closes = (((result.get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
+    except (TypeError, KeyError, IndexError):
+        raise LookupError("Price history unavailable")
+    points = []
+    for ts, close in zip(timestamps, closes):
+        if ts is None or close is None:
+            continue
+        points.append({"t": int(ts) * 1000, "nav": round(float(close), 4)})
+    if not points:
+        raise LookupError("Price history unavailable")
+    return {
+        "symbol": symbol,
+        "points": [{"t": row["t"], "price": row["nav"]} for row in _downsample_nav(points)],
+    }
+
+
+_GROWW_MF_HEADERS = {
+    "Referer": "https://groww.in/",
+    "Accept": "application/json",
+}
+
+
+def _groww_get_json(url: str, *, ttl: int, key: str, timeout: int = 25):
+    hit = _cached(key, ttl)
+    if hit and hit[0] == 200:
+        try:
+            return json.loads(hit[1])
+        except json.JSONDecodeError:
+            pass
+    remote = requests.get(url, headers={**BROWSER_HEADERS, **_GROWW_MF_HEADERS}, timeout=timeout)
+    remote.raise_for_status()
+    body = remote.text
+    _remember(key, 200, body, "application/json")
+    return json.loads(body)
+
+
+def mf_search(query: str, size: int = 12):
+    query = (query or "").strip()
+    if len(query) < 2:
+        return []
+    size = max(1, min(int(size or 12), 20))
+    payload = _groww_get_json(
+        "https://groww.in/v1/api/search/v1/entity"
+        f"?app=false&page=0&q={quote(query, safe='')}&size={size}&web=true",
+        ttl=60,
+        key=f"mf-search-{query.lower()}-{size}",
+    )
+    results = []
+    for row in payload.get("content") or []:
+        if (row.get("entity_type") or "").lower() != "scheme":
+            continue
+        search_id = (row.get("search_id") or row.get("id") or "").strip()
+        if not search_id:
+            continue
+        title = (row.get("title") or "").strip()
+        plan = "Direct" if "direct" in search_id else "Regular" if "regular" in search_id else ""
+        growth = "Growth" if "growth" in search_id else "IDCW" if "idcw" in search_id or "dividend" in search_id else ""
+        plan_label = " ".join(part for part in (plan, growth) if part)
+        results.append(
+            {
+                "searchId": search_id,
+                "schemeCode": str(row.get("scheme_code") or ""),
+                "name": title,
+                "plan": plan_label,
+                "label": f"{title} - {plan_label}" if plan_label else title,
+            }
+        )
+    results.sort(key=lambda item: (0 if "direct" in item["searchId"] and "growth" in item["searchId"] else 1, item["label"]))
+    return results
+
+
+def _as_float(value):
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _map_fund_category(category: str, is_index: bool = False) -> str:
+    if is_index:
+        return "Index"
+    text = (category or "").strip().lower()
+    if "hybrid" in text or "balanced" in text:
+        return "Hybrid"
+    if "debt" in text or "liquid" in text or "money market" in text or "gilt" in text:
+        return "Debt"
+    if "equity" in text or "elss" in text:
+        return "Equity"
+    if "index" in text or "etf" in text:
+        return "Index"
+    return "Other"
+
+
+def _parse_holdings(raw):
+    holdings = []
+    for row in raw or []:
+        if not isinstance(row, (list, tuple)) or len(row) < 9:
+            continue
+        assets = _as_float(row[8])
+        name = (row[2] or "").strip()
+        if not name or assets is None:
+            continue
+        holdings.append(
+            {
+                "name": name,
+                "sector": (row[4] or "").strip() or "—",
+                "instrument": (row[5] or row[3] or "").strip() or "—",
+                "assets": round(assets, 2),
+                "searchId": (row[11] if len(row) > 11 else "") or "",
+            }
+        )
+    holdings.sort(key=lambda item: item["assets"], reverse=True)
+    return holdings
+
+
+def _downsample_nav(points, max_points=720):
+    if len(points) <= max_points:
+        return points
+    step = max(1, len(points) // max_points)
+    sampled = points[::step]
+    if sampled[-1] != points[-1]:
+        sampled.append(points[-1])
+    return sampled
+
+
+def mf_nav_history(scheme_code: str):
+    scheme_code = str(scheme_code or "").strip()
+    if not scheme_code:
+        raise LookupError("Scheme not found")
+    payload = _groww_get_json(
+        f"https://groww.in/v1/api/data/mf/web/v1/scheme/{quote(scheme_code, safe='')}/graph",
+        ttl=6 * 60 * 60,
+        key=f"mf-nav-{scheme_code}",
+        timeout=30,
+    )
+    folio = payload.get("folio") or {}
+    points = []
+    for row in folio.get("data") or []:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        ts = _as_float(row[0])
+        nav = _as_float(row[1])
+        if ts is None or nav is None:
+            continue
+        points.append({"t": int(ts), "nav": round(nav, 4)})
+    return {
+        "schemeCode": scheme_code,
+        "name": folio.get("name") or "",
+        "points": _downsample_nav(points),
+    }
+
+
+def mf_scheme(search_id: str):
+    search_id = (search_id or "").strip()
+    if not search_id:
+        raise LookupError("Scheme not found")
+    payload = _groww_get_json(
+        f"https://groww.in/v1/api/data/mf/web/v1/scheme/search/{quote(search_id, safe='')}",
+        ttl=30 * 60,
+        key=f"mf-scheme-{search_id}",
+        timeout=30,
+    )
+    stats = (payload.get("return_stats") or [{}])[0] or {}
+    category = payload.get("category") or ""
+    managers = []
+    for row in payload.get("fund_manager_details") or []:
+        name = (row.get("person_name") or "").strip()
+        if not name:
+            continue
+        managers.append(
+            {
+                "name": name,
+                "education": (row.get("education") or "").strip(),
+                "experience": (row.get("experience") or "").strip(),
+                "since": (row.get("date_from") or "")[:10],
+            }
+        )
+    pros = []
+    cons = []
+    for row in payload.get("analysis") or []:
+        text = (row.get("analysis_desc") or "").strip()
+        if not text:
+            continue
+        kind = (row.get("analysis_type") or "").upper()
+        if kind == "CONS":
+            cons.append(text)
+        else:
+            pros.append(text)
+    return {
+        "searchId": payload.get("search_id") or search_id,
+        "schemeCode": str(payload.get("scheme_code") or ""),
+        "name": payload.get("scheme_name") or payload.get("fund_name") or search_id,
+        "fundName": payload.get("fund_name") or "",
+        "amc": payload.get("amc") or payload.get("fund_house") or "",
+        "fundHouse": payload.get("fund_house") or "",
+        "category": _map_fund_category(category, bool(payload.get("is_index_fund"))),
+        "categoryLabel": category,
+        "subCategory": payload.get("sub_category") or "",
+        "nav": _as_float(payload.get("nav")),
+        "navDate": payload.get("nav_date") or "",
+        "aum": _as_float(payload.get("aum")),
+        "expenseRatio": _as_float(payload.get("expense_ratio")),
+        "rating": payload.get("groww_rating"),
+        "minSip": _as_float(payload.get("min_sip_investment")),
+        "minLumpsum": _as_float(payload.get("min_investment_amount")),
+        "benchmark": payload.get("benchmark_name") or payload.get("benchmark") or "",
+        "launchDate": payload.get("launch_date") or "",
+        "exitLoad": payload.get("exit_load") or "",
+        "description": payload.get("description") or "",
+        "risk": ((payload.get("category_info") or {}).get("tags") or [None])[0]
+        if isinstance((payload.get("category_info") or {}).get("tags"), list)
+        else "",
+        "returns": {
+            "1d": _as_float(stats.get("return1d")),
+            "1w": _as_float(stats.get("return1w")),
+            "1m": _as_float(stats.get("return1m")),
+            "3m": _as_float(stats.get("return3m")),
+            "6m": _as_float(stats.get("return6m")),
+            "1y": _as_float(stats.get("return1y")),
+            "3y": _as_float(stats.get("return3y")),
+            "5y": _as_float(stats.get("return5y")),
+            "all": _as_float(stats.get("return_since_created") or stats.get("returnSinceCreated")),
+        },
+        "holdings": _parse_holdings(payload.get("holdings")),
+        "managers": managers,
+        "pros": pros[:6],
+        "cons": cons[:6],
+        "logoUrl": payload.get("logo_url") or "",
+        "planType": payload.get("plan_type") or "",
+        "schemeType": payload.get("scheme_type") or "",
+    }

@@ -1,4 +1,18 @@
-import type { Account, Holding, Member } from './types'
+import type {
+  Account,
+  Holding,
+  Member,
+  MemberInput,
+  MfNavHistory,
+  MfSchemeDetail,
+  MfSuggestion,
+  MutualFund,
+  MutualFundInput,
+  SipEntry,
+  SipEntryInput,
+  StockDetail,
+  StockPriceHistory,
+} from './types'
 
 const TOKEN_KEY = 'folio-token'
 const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '')
@@ -20,7 +34,9 @@ export async function apiFetch(input: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers)
   const token = getToken()
   if (token) headers.set('Authorization', `Token ${token}`)
-  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
   const response = await fetch(apiUrl(input), { ...init, headers })
   if (response.status === 401 && !input.includes('/api/auth/login')) {
     setToken(null)
@@ -83,7 +99,7 @@ export async function fetchMembers() {
   return readJson<Member[]>(response)
 }
 
-export async function createMember(member: Pick<Member, 'name' | 'email'>) {
+export async function createMember(member: MemberInput) {
   const response = await apiFetch('/api/members/', {
     method: 'POST',
     body: JSON.stringify(member),
@@ -91,10 +107,29 @@ export async function createMember(member: Pick<Member, 'name' | 'email'>) {
   return readJson<Member>(response)
 }
 
+export async function updateMember(id: string, member: Partial<MemberInput>) {
+  const response = await apiFetch(`/api/members/${id}/`, {
+    method: 'PATCH',
+    body: JSON.stringify(member),
+  })
+  return readJson<Member>(response)
+}
+
+export async function uploadMemberImage(id: string, file: File) {
+  const body = new FormData()
+  body.append('image', file)
+  const response = await apiFetch(`/api/members/${id}/image/`, {
+    method: 'POST',
+    body,
+  })
+  return readJson<Member>(response)
+}
+
 export async function deleteMember(id: string) {
   const response = await apiFetch(`/api/members/${id}/`, { method: 'DELETE' })
   if (!response.ok && response.status !== 204) {
-    throw new Error('Could not remove member')
+    const payload = await response.json().catch(() => null) as { error?: string } | null
+    throw new Error(payload?.error || 'Could not remove member')
   }
 }
 
@@ -123,5 +158,92 @@ export async function deleteHolding(id: string) {
   const response = await apiFetch(`/api/holdings/${id}/`, { method: 'DELETE' })
   if (!response.ok && response.status !== 204) {
     throw new Error('Could not remove holding')
+  }
+}
+
+export async function fetchMutualFunds() {
+  const response = await apiFetch('/api/mutual-funds/')
+  return readJson<MutualFund[]>(response)
+}
+
+export async function searchMutualFunds(query: string, signal?: AbortSignal) {
+  const q = query.trim()
+  if (q.length < 2) return [] as MfSuggestion[]
+  const response = await apiFetch(`/api/mf-search?q=${encodeURIComponent(q)}`, { signal })
+  const payload = await readJson<{ results: MfSuggestion[] }>(response)
+  return payload.results ?? []
+}
+
+export async function fetchMutualFundScheme(searchId: string, signal?: AbortSignal) {
+  const id = searchId.trim()
+  if (!id) throw new Error('Missing scheme id')
+  const response = await apiFetch(`/api/mf-scheme?id=${encodeURIComponent(id)}`, { signal })
+  return readJson<MfSchemeDetail>(response)
+}
+
+export async function fetchMutualFundNav(schemeCode: string, signal?: AbortSignal) {
+  const code = schemeCode.trim()
+  if (!code) throw new Error('Missing scheme code')
+  const response = await apiFetch(`/api/mf-nav?code=${encodeURIComponent(code)}`, { signal })
+  return readJson<MfNavHistory>(response)
+}
+
+export async function fetchStockDetail(symbol: string, signal?: AbortSignal) {
+  const value = symbol.trim()
+  if (!value) throw new Error('Missing symbol')
+  const response = await apiFetch(`/api/stock-detail?symbol=${encodeURIComponent(value)}`, { signal })
+  return readJson<StockDetail>(response)
+}
+
+export async function fetchStockHistory(symbol: string, signal?: AbortSignal) {
+  const value = symbol.trim()
+  if (!value) throw new Error('Missing symbol')
+  const response = await apiFetch(`/api/stock-history?symbol=${encodeURIComponent(value)}`, { signal })
+  return readJson<StockPriceHistory>(response)
+}
+
+export async function createMutualFund(fund: MutualFundInput) {
+  const response = await apiFetch('/api/mutual-funds/', {
+    method: 'POST',
+    body: JSON.stringify(fund),
+  })
+  return readJson<MutualFund>(response)
+}
+
+export async function updateMutualFund(id: string, fund: Partial<MutualFundInput>) {
+  const response = await apiFetch(`/api/mutual-funds/${id}/`, {
+    method: 'PATCH',
+    body: JSON.stringify(fund),
+  })
+  return readJson<MutualFund>(response)
+}
+
+export async function deleteMutualFund(id: string) {
+  const response = await apiFetch(`/api/mutual-funds/${id}/`, { method: 'DELETE' })
+  if (!response.ok && response.status !== 204) {
+    throw new Error('Could not remove mutual fund')
+  }
+}
+
+export async function createSipEntry(entry: SipEntryInput) {
+  const response = await apiFetch('/api/sip-entries/', {
+    method: 'POST',
+    body: JSON.stringify(entry),
+  })
+  return readJson<SipEntry>(response)
+}
+
+export async function updateSipEntry(id: string, entry: Partial<SipEntryInput>) {
+  const response = await apiFetch(`/api/sip-entries/${id}/`, {
+    method: 'PATCH',
+    body: JSON.stringify(entry),
+  })
+  return readJson<SipEntry>(response)
+}
+
+export async function deleteSipEntry(id: string) {
+  const response = await apiFetch(`/api/sip-entries/${id}/`, { method: 'DELETE' })
+  if (!response.ok && response.status !== 204) {
+    throw new Error('Could not remove SIP entry')
   }
 }
