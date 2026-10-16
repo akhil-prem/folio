@@ -39,15 +39,21 @@ def member_image_url(member, request=None):
         return None
     from django.conf import settings
 
-    url = member.image.url
-    if url.startswith("http://") or url.startswith("https://"):
-        return url
+    path = member.image.url
+    if not path.startswith("/"):
+        path = f"/{path}"
+
     public_base = getattr(settings, "PUBLIC_BASE_URL", "") or ""
     if public_base:
-        return f"{public_base}{url if url.startswith('/') else f'/{url}'}"
+        return f"{public_base}{path}"
+
     if request is not None:
-        return request.build_absolute_uri(url)
-    return url
+        absolute = request.build_absolute_uri(path)
+        # Prefer https when the app is served behind TLS (Render / custom subdomain).
+        if absolute.startswith("http://") and request.META.get("HTTP_X_FORWARDED_PROTO") == "https":
+            return "https://" + absolute[len("http://") :]
+        return absolute
+    return path
 
 
 def account_member(user):

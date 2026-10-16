@@ -21,14 +21,19 @@ function apiUrl(path: string) {
   return `${API_URL}${path}`
 }
 
-/** Make media/image URLs work when the API is on a different origin than the UI. */
+/** Make media/image URLs always hit the API host (frontend and backend are on different origins). */
 export function resolveMediaUrl(url: string | null | undefined) {
   if (!url) return null
-  if (url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http://') || url.startsWith('https://')) {
-    return url
-  }
+  if (url.startsWith('blob:') || url.startsWith('data:')) return url
   if (!API_URL) return url
+
+  // Absolute or relative media paths → always rewrite onto the API origin.
+  const mediaIdx = url.indexOf('/media/')
+  if (mediaIdx >= 0) {
+    return `${API_URL}${url.slice(mediaIdx)}`
+  }
   if (url.startsWith('/')) return `${API_URL}${url}`
+  if (url.startsWith('http://') || url.startsWith('https://')) return url
   return `${API_URL}/${url}`
 }
 
