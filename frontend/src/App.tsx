@@ -70,6 +70,7 @@ import {
   saveAccount,
   setToken,
   updateMember,
+  resolveMediaUrl,
   uploadMemberImage,
 } from './api'
 import { IposPage } from './IposPage'
@@ -178,8 +179,9 @@ const emptyAccount: Account = {
 
 function MemberAvatar({ member, size = 'normal' }: { member: Member; size?: 'normal' | 'small' }) {
   if (member.image) {
+    const imageUrl = resolveMediaUrl(member.image)
     return (
-      <span className={`avatar image${size === 'small' ? ' small' : ''}`} style={{ backgroundImage: `url(${member.image})` }} aria-hidden />
+      <span className={`avatar image${size === 'small' ? ' small' : ''}`} style={{ backgroundImage: `url(${imageUrl})` }} aria-hidden />
     )
   }
   return (
@@ -191,10 +193,11 @@ function MemberAvatar({ member, size = 'normal' }: { member: Member; size?: 'nor
 
 function AccountAvatar({ account, size = 'small' }: { account: Account; size?: 'small' | 'profile' }) {
   if (account.image) {
+    const imageUrl = resolveMediaUrl(account.image)
     return (
       <span
         className={size === 'profile' ? 'profile-avatar image' : 'avatar image small'}
-        style={{ backgroundImage: `url(${account.image})` }}
+        style={{ backgroundImage: `url(${imageUrl})` }}
         aria-hidden
       />
     )
@@ -1998,7 +2001,7 @@ function MemberModal({
   const [access, setAccess] = useState<MemberAccess>(member?.access ?? 'readonly')
   const [canLogin, setCanLogin] = useState(member?.canLogin ?? false)
   const [password, setPassword] = useState('')
-  const [imagePreview, setImagePreview] = useState(member?.image ?? null)
+  const [imagePreview, setImagePreview] = useState(resolveMediaUrl(member?.image) ?? null)
   const [pendingImage, setPendingImage] = useState<File | null>(null)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)

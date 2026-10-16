@@ -37,7 +37,14 @@ def actor_permissions(user):
 def member_image_url(member, request=None):
     if member is None or not member.image:
         return None
+    from django.conf import settings
+
     url = member.image.url
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    public_base = getattr(settings, "PUBLIC_BASE_URL", "") or ""
+    if public_base:
+        return f"{public_base}{url if url.startswith('/') else f'/{url}'}"
     if request is not None:
         return request.build_absolute_uri(url)
     return url
@@ -214,13 +221,7 @@ class MemberSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "color", "joined", "image", "isOwner"]
 
     def get_image(self, obj):
-        if not obj.image:
-            return None
-        request = self.context.get("request")
-        url = obj.image.url
-        if request is not None:
-            return request.build_absolute_uri(url)
-        return url
+        return member_image_url(obj, self.context.get("request"))
 
     def get_isOwner(self, obj):
         return is_owner_member(obj)

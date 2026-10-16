@@ -21,6 +21,17 @@ function apiUrl(path: string) {
   return `${API_URL}${path}`
 }
 
+/** Make media/image URLs work when the API is on a different origin than the UI. */
+export function resolveMediaUrl(url: string | null | undefined) {
+  if (!url) return null
+  if (url.startsWith('blob:') || url.startsWith('data:') || url.startsWith('http://') || url.startsWith('https://')) {
+    return url
+  }
+  if (!API_URL) return url
+  if (url.startsWith('/')) return `${API_URL}${url}`
+  return `${API_URL}/${url}`
+}
+
 export function getToken() {
   return sessionStorage.getItem(TOKEN_KEY)
 }
