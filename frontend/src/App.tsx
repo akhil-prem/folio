@@ -832,10 +832,11 @@ function App() {
 
   if (bootstrapping) {
     return (
-      <main className="auth-page">
-        <section className="auth-form-side" style={{ display: 'grid', placeItems: 'center' }}>
-          <Loader2 className="spinning" size={28} />
-        </section>
+      <main className="auth-loader" aria-busy="true" aria-live="polite">
+        <div className="auth-loader-inner">
+          <div className="auth-loader-spinner" aria-hidden="true" />
+          <p>Loading Folio…</p>
+        </div>
       </main>
     )
   }
@@ -1535,16 +1536,22 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
         <div className="auth-ring ring-a" /><div className="auth-ring ring-b" />
       </section>
       <section className="auth-form-side">
-        <form className="auth-card" onSubmit={(event) => void submit(event)}>
+        <form className={`auth-card${signingIn ? ' auth-card-loading' : ''}`} onSubmit={(event) => void submit(event)} aria-busy={signingIn}>
+          {signingIn && (
+            <div className="auth-card-loader" aria-live="polite">
+              <div className="auth-loader-spinner" aria-hidden="true" />
+              <span>Signing in…</span>
+            </div>
+          )}
           <p className="eyebrow">Welcome back</p>
           <h2>Sign in to Folio</h2>
           <p className="auth-intro">Admin or member login — use the email and password set for your account.</p>
           {error && <div className="form-alert">{error}</div>}
-          <label>Email address<div className="input-with-icon"><Mail size={17} /><input autoFocus required type="email" value={email} onChange={(event) => { setEmail(event.target.value); setError('') }} placeholder="you@example.com" /></div></label>
-          <label>Password<div className="input-with-icon"><LockKeyhole size={17} /><input required type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => { setPassword(event.target.value); setError('') }} placeholder="Enter your password" /><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label>
+          <label>Email address<div className="input-with-icon"><Mail size={17} /><input autoFocus required type="email" value={email} onChange={(event) => { setEmail(event.target.value); setError('') }} placeholder="you@example.com" disabled={signingIn} /></div></label>
+          <label>Password<div className="input-with-icon"><LockKeyhole size={17} /><input required type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => { setPassword(event.target.value); setError('') }} placeholder="Enter your password" disabled={signingIn} /><button type="button" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Hide password' : 'Show password'} disabled={signingIn}>{showPassword ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label>
           <button className={`button primary auth-submit${signingIn ? ' loading' : ''}`} disabled={signingIn}>
-            {signingIn ? <Loader2 size={17} className="spinning" /> : <ArrowUpRight size={17} />}
-            {signingIn ? 'Signing in…' : 'Sign in'}
+            <ArrowUpRight size={17} />
+            Sign in
           </button>
         </form>
       </section>

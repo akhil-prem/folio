@@ -570,6 +570,45 @@ html[data-theme='dark'] .mf-add-sip { background: #22352c; color: #9fcdb0; borde
 
 /* Authentication */
 .auth-page { min-height: 100vh; display: grid; grid-template-columns: minmax(420px, .95fr) minmax(480px, 1.05fr); background: var(--auth-form-bg); color: var(--text); }
+.auth-loader {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  gap: 18px;
+  background: var(--auth-form-bg);
+  color: var(--muted);
+  text-align: center;
+}
+.auth-loader-inner { display: grid; place-items: center; gap: 16px; }
+.auth-loader-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid color-mix(in srgb, var(--green) 22%, transparent);
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: spin .75s linear infinite;
+}
+.auth-loader p { margin: 0; font-size: 13px; font-weight: 550; }
+.auth-card-loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--auth-form-bg) 72%, transparent);
+  backdrop-filter: blur(1px);
+  z-index: 1;
+}
+.auth-card-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  pointer-events: none;
+}
+.auth-card-loader .auth-loader-spinner { width: 36px; height: 36px; }
+.auth-card-loader span { color: var(--muted); font-size: 12px; font-weight: 600; }
 .auth-visual { min-height: 100vh; padding: 48px clamp(42px, 6vw, 90px); position: relative; overflow: hidden; display: flex; flex-direction: column; color: #fff; background: linear-gradient(145deg, #132c22, #26523f); }
 .auth-brand { display: flex; align-items: center; gap: 12px; position: relative; z-index: 2; font-family: 'Fraunces', serif; font-size: 27px; }
 .auth-message { max-width: 550px; margin: auto 0; position: relative; z-index: 2; }
@@ -581,7 +620,7 @@ html[data-theme='dark'] .mf-add-sip { background: #22352c; color: #9fcdb0; borde
 .ring-a { width: 560px; height: 560px; right: -250px; bottom: -130px; }
 .ring-b { width: 340px; height: 340px; right: -115px; bottom: -20px; }
 .auth-form-side { padding: 48px; display: grid; place-items: center; }
-.auth-card { width: min(100%, 410px); }
+.auth-card { width: min(100%, 410px); position: relative; }
 .auth-card h2 { margin: 6px 0 8px; font-family: 'Fraunces', serif; font-size: 36px; font-weight: 620; }
 .auth-intro { margin: 0 0 30px; color: #8c8e88; font-size: 13px; }
 .auth-card > label { margin-top: 17px; display: grid; gap: 8px; color: #535954; font-size: 11px; font-weight: 650; }
