@@ -11,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { ArrowLeft, Trash2 } from 'lucide-react'
+import { ArrowLeft, Pencil, Trash2 } from 'lucide-react'
 import { fetchStockDetail, fetchStockHistory } from './api'
 import { BusyButton } from './BusyButton'
 import type { Holding, Member, StockDetail, StockPricePoint } from './types'
@@ -50,6 +50,7 @@ type Props = {
   members: Member[]
   canEdit: boolean
   onBack: () => void
+  onEdit?: () => void
   onRemove: (holding: Holding) => void | Promise<void>
   removing?: boolean
 }
@@ -72,7 +73,7 @@ function formatAxisDate(ts: number, range: RangeKey) {
   return date.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
 }
 
-export function StockDetailPage({ holding, members, canEdit, onBack, onRemove, removing = false }: Props) {
+export function StockDetailPage({ holding, members, canEdit, onBack, onEdit, onRemove, removing = false }: Props) {
   const [detail, setDetail] = useState<StockDetail | null>(null)
   const [points, setPoints] = useState<StockPricePoint[]>([])
   const [range, setRange] = useState<RangeKey>('1Y')
@@ -135,6 +136,11 @@ export function StockDetailPage({ holding, members, canEdit, onBack, onRemove, r
           <ArrowLeft size={16} /> Back to stocks
         </button>
         <div className="mf-detail-actions">
+          {canEdit && onEdit && (
+            <button type="button" className="button secondary" onClick={onEdit}>
+              <Pencil size={16} /> Edit holding
+            </button>
+          )}
           {canEdit && (
             <BusyButton
               className="button secondary"

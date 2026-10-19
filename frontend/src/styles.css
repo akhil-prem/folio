@@ -362,6 +362,7 @@ td.holdings-no-results { height: 100px; color: #999b95; text-align: center; }
 .icon-button:hover { background: var(--hover-bg); color: var(--text); }
 .icon-button.danger:hover { color: var(--negative); background: color-mix(in srgb, var(--negative) 14%, transparent); }
 table .icon-button { width: 27px; height: 27px; }
+.holding-row-actions { display: inline-flex; align-items: center; gap: 2px; }
 .empty-state { min-height: 390px; display: grid; place-items: center; align-content: center; text-align: center; border: 1px dashed #d7d4ca; border-radius: 15px; background: var(--paper); }
 .empty-icon { width: 58px; height: 58px; display: grid; place-items: center; color: #315c49; border-radius: 17px; background: #e6eee9; }
 .empty-state h3 { margin: 16px 0 5px; font-family: 'Fraunces', serif; font-size: 21px; }

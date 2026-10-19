@@ -1,9 +1,13 @@
-import { useMemo, useState } from 'react'
-import { BriefcaseBusiness, Download, Loader2, Plus, Search, Trash2, X } from 'lucide-react'
+import { type FormEvent, useMemo, useState } from 'react'
+import { BriefcaseBusiness, Download, Loader2, Pencil, Plus, Search, Trash2, X } from 'lucide-react'
+import { BusyButton } from './BusyButton'
 import { StockDetailPage } from './StockDetailPage'
-import type { Holding, Member } from './types'
+import { SECTORS, SECTOR_TREE } from './sectors'
+import type { Broker, Holding, MarketCap, Member } from './types'
+import { BROKERS } from './types'
 
 type RemoveHolding = (holding: Holding) => void | Promise<void>
+type UpdateHolding = (id: string, updates: Partial<Holding>) => Promise<void>
 
 type HoldingSort = 'invested-desc' | 'invested-asc' | 'symbol-asc' | 'quantity-desc' | 'sector-asc'
 
@@ -39,15 +43,17 @@ type Props = {
   selectedMember: string
   canEdit: boolean
   onAdd: (memberId?: string) => void
+  onUpdate: UpdateHolding
   onRemove: RemoveHolding
 }
 
-export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, onRemove }: Props) {
+export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, onUpdate, onRemove }: Props) {
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<HoldingSort>('invested-desc')
   const [showAll, setShowAll] = useState(false)
   const [busy, setBusy] = useState(false)
   const [detailId, setDetailId] = useState<string | null>(null)
+  const [editHolding, setEditHolding] = useState<Holding | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
 
   const deleteHolding = async (holding: Holding) => {
@@ -57,6 +63,7 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
     try {
       await onRemove(holding)
       if (detailId === holding.id) setDetailId(null)
+      if (editHolding?.id === holding.id) setEditHolding(null)
     } finally {
       setPendingDeleteId(null)
     }
@@ -86,17 +93,34 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
 
   const total = visible.reduce((sum, holding) => sum + investedOf(holding), 0)
   const detailHolding = holdings.find((holding) => holding.id === detailId) ?? null
+  const editingHolding = editHolding
+    ? holdings.find((holding) => holding.id === editHolding.id) ?? editHolding
+    : null
 
   if (detailHolding) {
     return (
-      <StockDetailPage
-        holding={detailHolding}
-        members={members}
-        canEdit={canEdit}
-        onBack={() => setDetailId(null)}
-        onRemove={deleteHolding}
-        removing={pendingDeleteId === detailHolding.id}
-      />
+      <>
+        <StockDetailPage
+          holding={detailHolding}
+          members={members}
+          canEdit={canEdit}
+          onBack={() => setDetailId(null)}
+          onEdit={canEdit ? () => setEditHolding(detailHolding) : undefined}
+          onRemove={deleteHolding}
+          removing={pendingDeleteId === detailHolding.id}
+        />
+        {editingHolding && (
+          <EditHoldingModal
+            holding={editingHolding}
+            members={members}
+            onClose={() => setEditHolding(null)}
+            onSave={async (updates) => {
+              await onUpdate(editingHolding.id, updates)
+              setEditHolding(null)
+            }}
+          />
+        )}
+      </>
     )
   }
 
@@ -223,14 +247,23 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
                       <td>{shortMoney(investedOf(holding))}</td>
                       <td onClick={(event) => event.stopPropagation()}>
                         {canEdit ? (
-                          <button
-                            className="icon-button danger"
-                            title="Delete holding"
-                            disabled={pendingDeleteId === holding.id}
-                            onClick={() => void deleteHolding(holding)}
-                          >
-                            {pendingDeleteId === holding.id ? <Loader2 size={15} className="spinning" /> : <Trash2 size={15} />}
-                          </button>
+                          <div className="holding-row-actions">
+                            <button
+                              className="icon-button"
+                              title="Edit holding"
+                              onClick={() => setEditHolding(holding)}
+                            >
+                              <Pencil size={15} />
+                            </button>
+                            <button
+                              className="icon-button danger"
+                              title="Delete holding"
+                              disabled={pendingDeleteId === holding.id}
+                              onClick={() => void deleteHolding(holding)}
+                            >
+                              {pendingDeleteId === holding.id ? <Loader2 size={15} className="spinning" /> : <Trash2 size={15} />}
+                            </button>
+                          </div>
                         ) : null}
                       </td>
                     </tr>
@@ -262,6 +295,143 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
           )}
         </section>
       )}
+
+      {editingHolding && (
+        <EditHoldingModal
+          holding={editingHolding}
+          members={members}
+          onClose={() => setEditHolding(null)}
+          onSave={async (updates) => {
+            await onUpdate(editingHolding.id, updates)
+            setEditHolding(null)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function EditHoldingModal({
+  holding,
+  members,
+  onClose,
+  onSave,
+}: {
+  holding: Holding
+  members: Member[]
+  onClose: () => void
+  onSave: (updates: Partial<Holding>) => Promise<void>
+}) {
+  const [memberId, setMemberId] = useState(holding.memberId)
+  const [broker, setBroker] = useState<Broker>(holding.broker || 'Groww')
+  const [sector, setSector] = useState(holding.sector)
+  const [subSector, setSubSector] = useState(holding.subSector)
+  const [cap, setCap] = useState<MarketCap>(holding.cap || 'Large')
+  const [quantity, setQuantity] = useState(String(holding.quantity))
+  const [avgPrice, setAvgPrice] = useState(String(holding.avgPrice))
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const sectorOptions = SECTORS.includes(sector) || !sector ? SECTORS : [sector, ...SECTORS]
+  const subSectorOptions = sector
+    ? (SECTOR_TREE[sector]?.includes(subSector) || !subSector
+      ? SECTOR_TREE[sector] ?? []
+      : [subSector, ...(SECTOR_TREE[sector] ?? [])])
+    : []
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (saving) return
+    const qty = Number(quantity)
+    const price = Number(avgPrice)
+    if (!memberId) {
+      setError('Pick a member.')
+      return
+    }
+    if (!qty || qty <= 0) {
+      setError('Enter a valid quantity.')
+      return
+    }
+    if (!price || price <= 0) {
+      setError('Enter a valid average price.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await onSave({
+        memberId,
+        broker,
+        sector,
+        subSector,
+        cap,
+        quantity: qty,
+        avgPrice: price,
+      })
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not update holding.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !saving && onClose()}>
+      <form className="modal" onSubmit={(event) => void submit(event)}>
+        <div className="modal-head">
+          <div>
+            <p className="eyebrow">{holding.symbol}</p>
+            <h2>Edit holding</h2>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} disabled={saving}><X size={20} /></button>
+        </div>
+        <p className="member-owner-note">{holding.company}</p>
+        <div className="form-grid">
+          <label>Member
+            <select required value={memberId} onChange={(event) => setMemberId(event.target.value)}>
+              {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+            </select>
+          </label>
+          <label>Broker
+            <select required value={broker} onChange={(event) => setBroker(event.target.value as Broker)}>
+              {BROKERS.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+          <label>Sector
+            <select required value={sector} onChange={(event) => {
+              const next = event.target.value
+              setSector(next)
+              setSubSector(SECTOR_TREE[next]?.[0] ?? '')
+            }}>
+              {sectorOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+          <label>Sub-sector
+            <select required value={subSector} onChange={(event) => setSubSector(event.target.value)} disabled={!sector}>
+              {subSectorOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+          </label>
+          <label>Market cap
+            <select required value={cap} onChange={(event) => setCap(event.target.value as MarketCap)}>
+              <option value="Large">Large</option>
+              <option value="Mid">Mid</option>
+              <option value="Small">Small</option>
+            </select>
+          </label>
+          <label>Quantity
+            <input required min={0.01} step="0.01" type="number" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
+          </label>
+          <label>Average price (₹)
+            <input required min={0.01} step="0.01" type="number" value={avgPrice} onChange={(event) => setAvgPrice(event.target.value)} />
+          </label>
+        </div>
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="button ghost" onClick={onClose} disabled={saving}>Cancel</button>
+          <BusyButton type="submit" className="button primary" busy={saving} busyLabel="Saving…">
+            Save changes
+          </BusyButton>
+        </div>
+      </form>
     </div>
   )
 }

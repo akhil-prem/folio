@@ -909,6 +909,11 @@ function App() {
     setModal(null)
   }
 
+  const saveHolding = async (id: string, updates: Partial<Holding>) => {
+    const updated = await patchHolding(id, updates)
+    setHoldings((current) => current.map((holding) => (holding.id === id ? updated : holding)))
+  }
+
   const removeMember = async (member: Member) => {
     if (member.isOwner) {
       window.alert('Your account member cannot be removed.')
@@ -1351,6 +1356,7 @@ function App() {
             selectedMember={selectedMember}
             canEdit={canEdit}
             onAdd={(memberId) => setModal({ type: 'holding', memberId })}
+            onUpdate={saveHolding}
             onRemove={removeHolding}
           />
         )}
