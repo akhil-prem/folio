@@ -26,6 +26,14 @@ const pct = (value: number | null | undefined, digits = 2) =>
 const aumLabel = (value: number | null | undefined) =>
   value == null ? '—' : `₹${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(value)} Cr`
 
+const formatSipSpan = (months: number) => {
+  if (months <= 11) return `${months} mo`
+  const years = Math.floor(months / 12)
+  const rem = months % 12
+  if (rem === 0) return `${years} yr`
+  return `${years} yr ${rem} mo`
+}
+
 const MS = {
   '1M': 30 * 24 * 60 * 60 * 1000,
   '6M': 182 * 24 * 60 * 60 * 1000,
@@ -206,7 +214,7 @@ export function MutualFundDetailPage({ fund, canEdit, onBack, onViewHistory, onA
             <div>
               <span>Your investment</span>
               <strong>{money(fund.totalInvested)}</strong>
-              <em>{fund.sipCount} SIP months logged</em>
+              <em>{formatSipSpan(fund.sipCount)} SIP logged</em>
             </div>
             <div className="mf-detail-actions">
               <button type="button" className="button secondary" onClick={onViewHistory}>View SIP history</button>

@@ -29,6 +29,15 @@ const shortMoney = (amount: number) =>
 
 const monthLabel = (month: number, year: number) => `${MONTHS[month - 1].slice(0, 3)} ${year}`
 
+/** e.g. 8 → "8 mo"; 14 → "1 yr 2 mo"; 24 → "2 yr" */
+const formatSipSpan = (months: number) => {
+  if (months <= 11) return `${months} mo`
+  const years = Math.floor(months / 12)
+  const rem = months % 12
+  if (rem === 0) return `${years} yr`
+  return `${years} yr ${rem} mo`
+}
+
 type Props = {
   funds: MutualFund[]
   members: Member[]
@@ -189,14 +198,14 @@ export function MutualFundsPage({
                 <p>{fund.amc || 'AMC not set'}{fund.folioNumber ? ` · Folio ${fund.folioNumber}` : ''}</p>
                 <div className="member-stat-row">
                   <div><span>Total invested</span><strong>{shortMoney(fund.totalInvested)}</strong></div>
-                  <div><span>SIP months</span><strong>{fund.sipCount}</strong></div>
+                  <div><span>SIP span</span><strong>{formatSipSpan(fund.sipCount)}</strong></div>
                 </div>
                 <div className="mf-card-summary">
                   {latest ? (
                     <>
                       <span>Latest SIP</span>
                       <strong>{monthLabel(latest.month, latest.year)} · {money(latest.amount)}</strong>
-                      {yearSpan && <small>{fund.sipCount} months across {yearSpan}</small>}
+                      {yearSpan && <small>{formatSipSpan(fund.sipCount)} across {yearSpan}</small>}
                     </>
                   ) : (
                     <em>No SIP months logged yet</em>
