@@ -60,8 +60,6 @@ class Member(models.Model):
 
 
 class Holding(models.Model):
-    CAP_CHOICES = (('Large', 'Large'), ('Mid', 'Mid'), ('Small', 'Small'))
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='holdings', on_delete=models.CASCADE)
     member = models.ForeignKey(Member, related_name='holdings', on_delete=models.CASCADE)
@@ -69,7 +67,6 @@ class Holding(models.Model):
     company = models.CharField(max_length=200)
     sector = models.CharField(max_length=80, blank=True)
     sub_sector = models.CharField(max_length=80, blank=True)
-    cap = models.CharField(max_length=8, choices=CAP_CHOICES, default='Large')
     quantity = models.DecimalField(max_digits=16, decimal_places=4)
     avg_price = models.DecimalField(max_digits=16, decimal_places=4)
     created_at = models.DateTimeField(auto_now_add=True)

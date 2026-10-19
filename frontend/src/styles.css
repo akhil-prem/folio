@@ -287,7 +287,37 @@ button { cursor: pointer; }
 
 .metrics-grid { margin: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 13px; }
 .metric-card { min-height: 105px; padding: 20px; display: flex; align-items: center; gap: 13px; position: relative; border: 1px solid var(--line); border-radius: 13px; background: var(--paper); color: var(--text); animation: reveal-up .42s ease both; transition: transform .2s ease, box-shadow .2s ease; }
+.metric-card-clickable { cursor: pointer; }
+.metric-card-clickable:hover { border-color: var(--line-strong); }
 .metric-card:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(34,41,37,.06); }
+.panel-clickable { cursor: pointer; }
+.panel-clickable:hover { border-color: var(--line-strong); }
+.legend-row-button {
+  width: 100%;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.legend-row-button:hover { background: var(--hover-bg); }
+.stock-filter-bar {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.stock-filter-bar .button.ghost { min-height: 32px; padding: 0 10px; font-size: 12px; }
 .metric-card:nth-child(2) { animation-delay: .05s; }
 .metric-card:nth-child(3) { animation-delay: .1s; }
 .metric-card:nth-child(4) { animation-delay: .15s; }
@@ -507,7 +537,8 @@ table .icon-button { width: 27px; height: 27px; }
 .stock-funds-list strong { color: var(--text); font-size: 13px; }
 .stock-funds-list span, .stock-funds-list em { color: var(--muted); font-size: 12px; font-style: normal; }
 .broker-chip-row { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
-.broker-chip { padding: 8px 10px; display: grid; gap: 2px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px; background: var(--paper-2); min-width: 110px; }
+.broker-chip { padding: 8px 10px; display: grid; gap: 2px; border: 1px solid var(--line); border-left-width: 3px; border-radius: 10px; background: var(--paper-2); min-width: 110px; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.broker-chip:hover { background: var(--paper); }
 .broker-chip strong { color: var(--text); font-size: 12px; }
 .broker-chip em { color: var(--muted); font-size: 11px; font-style: normal; }
 

@@ -78,9 +78,10 @@ import { BusyButton } from './BusyButton'
 import { MutualFundsPage } from './MutualFundsPage'
 import { StocksPage } from './StocksPage'
 import { KpiSkeleton, TableSkeleton } from './loading'
+import { capFromMcap, resolveLiveCap } from './marketCap'
 import { SECTORS, SECTOR_TREE, classifyStock } from './sectors'
 import { applyTheme, getPreferredTheme, toggleTheme, type Theme } from './theme'
-import type { Account, Broker, Holding, MarketCap, Member, MemberAccess, MemberInput, MutualFund, MutualFundInput, SipEntryInput } from './types'
+import type { Account, Broker, Holding, MarketCap, Member, MemberAccess, MemberInput, MutualFund, MutualFundInput, SipEntryInput, StockListFilter } from './types'
 import { BROKERS } from './types'
 
 type View = 'dashboard' | 'stocks' | 'members' | 'funds' | 'markets' | 'ipos' | 'profile' | 'password'
@@ -262,19 +263,6 @@ function normalizeHolding(holding: Holding): Holding {
     symbol: holding.symbol,
   })
   return { ...holding, sector: classified.sector, subSector: classified.subSector }
-}
-
-function capFromMcap(mcap: number | null, universe = ''): MarketCap | '' {
-  if (mcap != null && mcap > 0) {
-    if (mcap >= 80_000) return 'Large'
-    if (mcap >= 25_000) return 'Mid'
-    return 'Small'
-  }
-  const token = universe.toLowerCase()
-  if (token.includes('small')) return 'Small'
-  if (token.includes('mid')) return 'Mid'
-  if (token.includes('nifty50') || token.includes('nifty100')) return 'Large'
-  return ''
 }
 
 function nseSymbolFromYahoo(symbol: string): string {
@@ -666,6 +654,17 @@ function App() {
     }
   }, [])
   const [view, setView] = useState<View>('dashboard')
+  const [stockFilter, setStockFilter] = useState<StockListFilter | null>(null)
+
+  const openStocks = (filter: StockListFilter | null = null) => {
+    setStockFilter(filter)
+    setView('stocks')
+  }
+
+  const openFunds = () => {
+    setStockFilter(null)
+    setView('funds')
+  }
   const [ipoRefreshKey, setIpoRefreshKey] = useState(0)
   const [ipoBusy, setIpoBusy] = useState(false)
   const [selectedMember, setSelectedMember] = useState('all')
@@ -686,8 +685,27 @@ function App() {
     [holdings],
   )
 
+  const refreshHoldingQuotes = useCallback(async () => {
+    if (uniqueSymbols.length === 0) {
+      setStockQuotes([])
+      return
+    }
+    const quotes = await Promise.all(uniqueSymbols.map(async (symbol) => {
+      try {
+        const response = await apiFetch(`/api/stocks/${encodeURIComponent(symbol)}`)
+        if (!response.ok) return null
+        return parseStockQuote(await response.json())
+      } catch {
+        return null
+      }
+    }))
+    setStockQuotes(quotes.filter((quote): quote is StockQuote => quote !== null))
+  }, [uniqueSymbols])
+
   const refreshMarket = useCallback(async () => {
     setMarketLoading(true)
+    // Always refresh holding quotes for live market-cap charts, even if overview fails.
+    const quotesPromise = refreshHoldingQuotes()
     try {
       const [overviewRes, gainerRes, loserRes] = await Promise.all([
         apiFetch('/api/market-overview'),
@@ -710,38 +728,38 @@ function App() {
       } catch {
         /* NSE sometimes returns an HTML challenge instead of JSON */
       }
-
-      if (uniqueSymbols.length > 0) {
-        const sectorBySymbol = new Map(holdings.map((holding) => [holding.symbol.toUpperCase(), holding.sector]))
-        const quotes = await Promise.all(uniqueSymbols.map(async (symbol) => {
-          try {
-            const response = await apiFetch(`/api/stocks/${encodeURIComponent(symbol)}`)
-            if (!response.ok) return null
-            const quote = parseStockQuote(await response.json())
-            if (!quote) return null
-            if (quote.sector === 'Unknown') quote.sector = sectorBySymbol.get(symbol) ?? 'Unknown'
-            return quote
-          } catch {
-            return null
-          }
-        }))
-        setStockQuotes(quotes.filter((quote): quote is StockQuote => quote !== null))
-      } else {
-        setStockQuotes([])
-      }
     } catch {
       setMarketError('Live market data is temporarily unavailable.')
     } finally {
+      await quotesPromise.catch(() => undefined)
       setMarketLoading(false)
     }
-  }, [uniqueSymbols, holdings])
+  }, [refreshHoldingQuotes])
 
   useEffect(() => {
-    if (!authenticated || (view !== 'dashboard' && view !== 'markets')) return
-    void refreshMarket()
-    const timer = window.setInterval(() => void refreshMarket(), 60_000)
-    return () => window.clearInterval(timer)
-  }, [authenticated, view, refreshMarket])
+    if (!authenticated) return
+    if (view === 'dashboard' || view === 'markets') {
+      void refreshMarket()
+      const timer = window.setInterval(() => void refreshMarket(), 60_000)
+      return () => window.clearInterval(timer)
+    }
+    if (view === 'stocks' || view === 'members') {
+      void refreshHoldingQuotes()
+      const timer = window.setInterval(() => void refreshHoldingQuotes(), 60_000)
+      return () => window.clearInterval(timer)
+    }
+  }, [authenticated, view, refreshMarket, refreshHoldingQuotes])
+
+  const liveCaps = useMemo(() => {
+    const map = new Map<string, MarketCap>()
+    for (const quote of stockQuotes) {
+      const cap = capFromMcap(quote.mcap, quote.universe)
+      if (cap) map.set(quote.symbol.toUpperCase(), cap)
+    }
+    return map
+  }, [stockQuotes])
+
+  const liveCapOf = (symbol: string) => resolveLiveCap(symbol, liveCaps)
 
   const visibleHoldings = useMemo(
     () => selectedMember === 'all' ? holdings : holdings.filter((holding) => holding.memberId === selectedMember),
@@ -797,8 +815,11 @@ function App() {
 
   const capData = useMemo(() => {
     const order: MarketCap[] = ['Large', 'Mid', 'Small']
-    return order.map((cap) => ({ name: `${cap} cap`, count: visibleHoldings.filter((holding) => holding.cap === cap).length }))
-  }, [visibleHoldings])
+    return order.map((cap) => ({
+      name: `${cap} cap`,
+      count: visibleHoldings.filter((holding) => liveCapOf(holding.symbol) === cap).length,
+    }))
+  }, [visibleHoldings, liveCaps])
 
   const combinedAllocation = useMemo(() => {
     const rows = [
@@ -1004,8 +1025,8 @@ function App() {
         <div className="brand"><span className="brand-mark"><TrendingUp size={20} /></span><span>Folio</span></div>
         <nav className="side-nav">
           <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}><LayoutDashboard size={19} /> Overview</button>
-          <button className={view === 'stocks' ? 'active' : ''} onClick={() => setView('stocks')}><BriefcaseBusiness size={19} /> Stocks<span className="nav-count">{holdings.length}</span></button>
-          <button className={view === 'funds' ? 'active' : ''} onClick={() => setView('funds')}><PiggyBank size={19} /> Mutual funds<span className="nav-count">{mutualFunds.length}</span></button>
+          <button className={view === 'stocks' ? 'active' : ''} onClick={() => openStocks()}><BriefcaseBusiness size={19} /> Stocks<span className="nav-count">{holdings.length}</span></button>
+          <button className={view === 'funds' ? 'active' : ''} onClick={openFunds}><PiggyBank size={19} /> Mutual funds<span className="nav-count">{mutualFunds.length}</span></button>
           <button className={view === 'markets' ? 'active' : ''} onClick={() => setView('markets')}><LineChart size={19} /> Live market</button>
           <button className={view === 'ipos' ? 'active' : ''} onClick={() => setView('ipos')}><Landmark size={19} /> IPOs</button>
           <button className={view === 'members' ? 'active' : ''} onClick={() => setView('members')}><UsersRound size={19} /> Members<span className="nav-count">{members.length}</span></button>
@@ -1078,10 +1099,10 @@ function App() {
             </section>
 
             <section className="metrics-grid">
-              <Metric icon={<WalletCards size={20} />} color="green" label="Total invested" value={shortMoney(portfolio.invested)} meta="Stocks + mutual funds" />
-              <Metric icon={<BriefcaseBusiness size={20} />} color="violet" label="Stocks" value={shortMoney(portfolio.stocksInvested)} meta={`${visibleHoldings.length} holdings`} />
-              <Metric icon={<PiggyBank size={20} />} color="orange" label="Mutual funds" value={shortMoney(portfolio.fundsInvested)} meta={`${visibleFunds.length} schemes`} />
-              <Metric icon={<UsersRound size={20} />} color="blue" label="Active members" value={String(members.length)} meta="Profiles" />
+              <Metric icon={<WalletCards size={20} />} color="green" label="Total invested" value={shortMoney(portfolio.invested)} meta="Stocks + mutual funds" onClick={() => openStocks()} />
+              <Metric icon={<BriefcaseBusiness size={20} />} color="violet" label="Stocks" value={shortMoney(portfolio.stocksInvested)} meta={`${visibleHoldings.length} holdings`} onClick={() => openStocks()} />
+              <Metric icon={<PiggyBank size={20} />} color="orange" label="Mutual funds" value={shortMoney(portfolio.fundsInvested)} meta={`${visibleFunds.length} schemes`} onClick={openFunds} />
+              <Metric icon={<UsersRound size={20} />} color="blue" label="Active members" value={String(members.length)} meta="Profiles" onClick={() => setView('members')} />
             </section>
 
             {visibleHoldings.length === 0 && visibleFunds.length === 0 ? (
@@ -1099,12 +1120,26 @@ function App() {
                 {combinedAllocation.length > 0 && (
                   <section className="chart-grid">
                     <article className="panel">
-                      <PanelHeader title="Asset mix" subtitle="Stocks vs mutual funds" />
+                      <PanelHeader title="Asset mix" subtitle="Stocks vs mutual funds · click to open list" />
                       <div className="donut-layout">
                         <div className="donut-wrap">
                           <ResponsiveContainer width="100%" height={250}>
                             <PieChart>
-                              <Pie data={combinedAllocation} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                              <Pie
+                                data={combinedAllocation}
+                                dataKey="value"
+                                nameKey="name"
+                                innerRadius={72}
+                                outerRadius={99}
+                                paddingAngle={3}
+                                stroke="none"
+                                style={{ cursor: 'pointer' }}
+                                onClick={(_, index) => {
+                                  const row = combinedAllocation[index]
+                                  if (row?.name === 'Mutual funds') openFunds()
+                                  else openStocks()
+                                }}
+                              >
                                 {combinedAllocation.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
                               </Pie>
                               <Tooltip formatter={(value) => money(Number(value))} />
@@ -1114,17 +1149,26 @@ function App() {
                         </div>
                         <div className="legend-list">
                           {combinedAllocation.map((row) => (
-                            <div className="legend-row" key={row.name}>
+                            <button
+                              type="button"
+                              className="legend-row legend-row-button"
+                              key={row.name}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                if (row.name === 'Mutual funds') openFunds()
+                                else openStocks()
+                              }}
+                            >
                               <span className="legend-dot" style={{ background: row.color }} />
                               <span>{row.name}<small>{shortMoney(row.value)}</small></span>
                               <strong>{portfolio.invested ? ((row.value / portfolio.invested) * 100).toFixed(1) : 0}%</strong>
-                            </div>
+                            </button>
                           ))}
                         </div>
                       </div>
                     </article>
                     <article className="panel">
-                      <PanelHeader title="Broker allocation" subtitle="Capital by broker / app" />
+                      <PanelHeader title="Broker allocation" subtitle="Capital by broker / app · click a broker" />
                       {brokerData.length === 0 ? (
                         <div className="modal-empty"><p>Add broker on stocks and funds to see this split.</p></div>
                       ) : (
@@ -1132,7 +1176,20 @@ function App() {
                           <div className="donut-wrap">
                             <ResponsiveContainer width="100%" height={250}>
                               <PieChart>
-                                <Pie data={brokerData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                                <Pie
+                                  data={brokerData}
+                                  dataKey="value"
+                                  nameKey="name"
+                                  innerRadius={72}
+                                  outerRadius={99}
+                                  paddingAngle={3}
+                                  stroke="none"
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={(_, index) => {
+                                    const row = brokerData[index]
+                                    if (row) openStocks({ broker: row.name })
+                                  }}
+                                >
                                   {brokerData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
                                 </Pie>
                                 <Tooltip formatter={(value) => money(Number(value))} />
@@ -1142,14 +1199,22 @@ function App() {
                           </div>
                           <div className="legend-list">
                             {brokerData.map((row, index) => (
-                              <div className="legend-row" key={row.name}>
+                              <button
+                                type="button"
+                                className="legend-row legend-row-button"
+                                key={row.name}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  openStocks({ broker: row.name })
+                                }}
+                              >
                                 <span className="legend-dot" style={{ background: CHART_COLORS[index % CHART_COLORS.length] }} />
                                 <span>
                                   {row.name}
                                   <small>{row.stocks} stocks · {row.funds} funds</small>
                                 </span>
                                 <strong>{portfolio.invested ? ((row.value / portfolio.invested) * 100).toFixed(1) : 0}%</strong>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         </div>
@@ -1161,7 +1226,7 @@ function App() {
                 {brokerData.length > 0 && (
                   <section className="chart-grid">
                     <article className="panel">
-                      <PanelHeader title="Broker invested" subtitle="Amount held in each broker" />
+                      <PanelHeader title="Broker invested" subtitle="Amount held in each broker · click a bar" />
                       <div className="bar-chart">
                         <ResponsiveContainer width="100%" height={Math.max(240, brokerData.length * 46)}>
                           <BarChart data={brokerData} layout="vertical" margin={{ top: 12, right: 18, left: 8, bottom: 0 }}>
@@ -1169,7 +1234,17 @@ function App() {
                             <XAxis type="number" axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 11 }} tickFormatter={(value) => shortMoney(Number(value))} />
                             <YAxis type="category" dataKey="name" width={110} axisLine={false} tickLine={false} tick={{ fill: 'var(--text-soft)', fontSize: 11 }} />
                             <Tooltip formatter={(value) => money(Number(value))} cursor={{ fill: 'var(--paper-2)' }} />
-                            <Bar dataKey="value" radius={[0, 7, 7, 0]} maxBarSize={22}>
+                            <Bar
+                              dataKey="value"
+                              radius={[0, 7, 7, 0]}
+                              maxBarSize={22}
+                              style={{ cursor: 'pointer' }}
+                              onClick={(data) => {
+                                const payload = (data as { payload?: { name?: string }; name?: string })
+                                const name = payload.payload?.name ?? payload.name
+                                if (name) openStocks({ broker: name })
+                              }}
+                            >
                               {brokerData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
                             </Bar>
                           </BarChart>
@@ -1179,12 +1254,12 @@ function App() {
                     <article className="panel">
                       <PanelHeader title="Quick links" subtitle="Manage holdings on dedicated pages" />
                       <div className="dash-links">
-                        <button className="dash-link-card" onClick={() => setView('stocks')}>
+                        <button className="dash-link-card" onClick={() => openStocks()}>
                           <BriefcaseBusiness size={20} />
                           <strong>Stocks</strong>
                           <span>{visibleHoldings.length} holdings · {shortMoney(portfolio.stocksInvested)}</span>
                         </button>
-                        <button className="dash-link-card" onClick={() => setView('funds')}>
+                        <button className="dash-link-card" onClick={openFunds}>
                           <PiggyBank size={20} />
                           <strong>Mutual funds</strong>
                           <span>{visibleFunds.length} schemes · {shortMoney(portfolio.fundsInvested)}</span>
@@ -1192,10 +1267,16 @@ function App() {
                       </div>
                       <div className="broker-chip-row">
                         {brokerData.slice(0, 6).map((row, index) => (
-                          <span className="broker-chip" key={row.name} style={{ borderColor: CHART_COLORS[index % CHART_COLORS.length] }}>
+                          <button
+                            type="button"
+                            className="broker-chip"
+                            key={row.name}
+                            style={{ borderColor: CHART_COLORS[index % CHART_COLORS.length] }}
+                            onClick={() => openStocks({ broker: row.name })}
+                          >
                             <strong>{row.name}</strong>
                             <em>{shortMoney(row.value)}</em>
-                          </span>
+                          </button>
                         ))}
                       </div>
                     </article>
@@ -1206,12 +1287,25 @@ function App() {
                   <>
                     <section className="chart-grid">
                       <article className="panel">
-                        <PanelHeader title="Sector allocation" subtitle="Stock capital by sector" />
+                        <PanelHeader title="Sector allocation" subtitle="Stock capital by sector · click a sector" />
                         <div className="donut-layout">
                           <div className="donut-wrap">
                             <ResponsiveContainer width="100%" height={250}>
                               <PieChart>
-                                <Pie data={sectorData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                                <Pie
+                                  data={sectorData}
+                                  dataKey="value"
+                                  nameKey="name"
+                                  innerRadius={72}
+                                  outerRadius={99}
+                                  paddingAngle={3}
+                                  stroke="none"
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={(_, index) => {
+                                    const row = sectorData[index]
+                                    if (row) openStocks({ sector: row.name })
+                                  }}
+                                >
                                   {sectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
                                 </Pie>
                                 <Tooltip formatter={(value) => money(Number(value))} />
@@ -1221,22 +1315,43 @@ function App() {
                           </div>
                           <div className="legend-list">
                             {sectorData.slice(0, 6).map((sector, index) => (
-                              <div className="legend-row" key={sector.name}>
+                              <button
+                                type="button"
+                                className="legend-row legend-row-button"
+                                key={sector.name}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  openStocks({ sector: sector.name })
+                                }}
+                              >
                                 <span className="legend-dot" style={{ background: CHART_COLORS[index % CHART_COLORS.length] }} />
                                 <span>{sector.name}<small>{sector.count} {sector.count === 1 ? 'stock' : 'stocks'}</small></span>
                                 <strong>{portfolio.stocksInvested ? ((sector.value / portfolio.stocksInvested) * 100).toFixed(1) : 0}%</strong>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         </div>
                       </article>
                       <article className="panel">
-                        <PanelHeader title="Sub-sector allocation" subtitle="Stock capital by sub-sector" />
+                        <PanelHeader title="Sub-sector allocation" subtitle="Stock capital by sub-sector · click a sub-sector" />
                         <div className="donut-layout">
                           <div className="donut-wrap">
                             <ResponsiveContainer width="100%" height={250}>
                               <PieChart>
-                                <Pie data={subSectorData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                                <Pie
+                                  data={subSectorData}
+                                  dataKey="value"
+                                  nameKey="name"
+                                  innerRadius={72}
+                                  outerRadius={99}
+                                  paddingAngle={3}
+                                  stroke="none"
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={(_, index) => {
+                                    const row = subSectorData[index]
+                                    if (row) openStocks({ subSector: row.name })
+                                  }}
+                                >
                                   {subSectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
                                 </Pie>
                                 <Tooltip formatter={(value) => money(Number(value))} />
@@ -1246,11 +1361,19 @@ function App() {
                           </div>
                           <div className="legend-list">
                             {subSectorData.slice(0, 6).map((sector, index) => (
-                              <div className="legend-row" key={sector.name}>
+                              <button
+                                type="button"
+                                className="legend-row legend-row-button"
+                                key={sector.name}
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  openStocks({ subSector: sector.name })
+                                }}
+                              >
                                 <span className="legend-dot" style={{ background: CHART_COLORS[index % CHART_COLORS.length] }} />
                                 <span>{sector.name}<small>{sector.count} {sector.count === 1 ? 'stock' : 'stocks'}</small></span>
                                 <strong>{portfolio.stocksInvested ? ((sector.value / portfolio.stocksInvested) * 100).toFixed(1) : 0}%</strong>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         </div>
@@ -1259,7 +1382,7 @@ function App() {
 
                     <section className="chart-grid sector-count-panel">
                       <article className="panel">
-                        <PanelHeader title="Stock count by size" subtitle="Large, mid and small cap mix" />
+                        <PanelHeader title="Stock count by size" subtitle="Live large, mid and small mix · click a size" />
                         <div className="bar-chart">
                           <ResponsiveContainer width="100%" height={272}>
                             <BarChart data={capData} margin={{ top: 15, right: 5, left: -22, bottom: 0 }}>
@@ -1267,7 +1390,18 @@ function App() {
                               <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 12 }} />
                               <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 11 }} />
                               <Tooltip cursor={{ fill: 'var(--paper-2)' }} />
-                              <Bar dataKey="count" radius={[8, 8, 2, 2]} maxBarSize={62}>
+                              <Bar
+                                dataKey="count"
+                                radius={[8, 8, 2, 2]}
+                                maxBarSize={62}
+                                style={{ cursor: 'pointer' }}
+                                onClick={(data) => {
+                                  const payload = (data as { payload?: { name?: string }; name?: string })
+                                  const name = String(payload.payload?.name ?? payload.name ?? '')
+                                  const cap = name.replace(/ cap$/i, '') as MarketCap
+                                  if (cap === 'Large' || cap === 'Mid' || cap === 'Small') openStocks({ cap })
+                                }}
+                              >
                                 {capData.map((entry, index) => <Cell key={entry.name} fill={['#244d3c', '#e8995d', '#d9ba59'][index]} />)}
                               </Bar>
                             </BarChart>
@@ -1275,7 +1409,7 @@ function App() {
                         </div>
                       </article>
                       <article className="panel">
-                        <PanelHeader title="Stocks by sector" subtitle="Holdings in each main sector" />
+                        <PanelHeader title="Stocks by sector" subtitle="Holdings in each main sector · click a sector" />
                         <div className="sector-count-chart" style={{ height: Math.max(240, sectorData.length * 42) }}>
                           <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={sectorData} layout="vertical" margin={{ top: 16, right: 22, left: 8, bottom: 0 }}>
@@ -1283,7 +1417,17 @@ function App() {
                               <XAxis type="number" allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: 'var(--muted)', fontSize: 11 }} />
                               <YAxis type="category" dataKey="name" width={118} axisLine={false} tickLine={false} tick={{ fill: 'var(--text-soft)', fontSize: 11 }} />
                               <Tooltip formatter={(value) => [`${Number(value)} ${Number(value) === 1 ? 'stock' : 'stocks'}`, 'Holdings']} cursor={{ fill: 'var(--paper-2)' }} />
-                              <Bar dataKey="count" radius={[0, 7, 7, 0]} maxBarSize={22}>
+                              <Bar
+                                dataKey="count"
+                                radius={[0, 7, 7, 0]}
+                                maxBarSize={22}
+                                style={{ cursor: 'pointer' }}
+                                onClick={(data) => {
+                                  const payload = (data as { payload?: { name?: string }; name?: string })
+                                  const name = payload.payload?.name ?? payload.name
+                                  if (name) openStocks({ sector: name })
+                                }}
+                              >
                                 {sectorData.map((entry, index) => <Cell key={entry.name} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
                               </Bar>
                             </BarChart>
@@ -1296,8 +1440,8 @@ function App() {
 
                 {(fundAllocation.length > 0 || sipTrend.length > 0) && (
                   <section className="chart-grid">
-                    <article className="panel">
-                      <PanelHeader title="Mutual fund allocation" subtitle="Total SIP invested by scheme" />
+                    <article className="panel panel-clickable" onClick={openFunds} title="Open mutual funds">
+                      <PanelHeader title="Mutual fund allocation" subtitle="Total SIP invested by scheme · click to open funds" />
                       {fundAllocation.length === 0 ? (
                         <div className="modal-empty"><p>Add SIP months to see fund allocation.</p></div>
                       ) : (
@@ -1305,7 +1449,7 @@ function App() {
                           <div className="donut-wrap">
                             <ResponsiveContainer width="100%" height={250}>
                               <PieChart>
-                                <Pie data={fundAllocation} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none">
+                                <Pie data={fundAllocation} dataKey="value" nameKey="name" innerRadius={72} outerRadius={99} paddingAngle={3} stroke="none" style={{ cursor: 'pointer' }} onClick={openFunds}>
                                   {fundAllocation.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
                                 </Pie>
                                 <Tooltip formatter={(value) => money(Number(value))} />
@@ -1315,18 +1459,18 @@ function App() {
                           </div>
                           <div className="legend-list">
                             {fundAllocation.slice(0, 6).map((fund) => (
-                              <div className="legend-row" key={fund.name}>
+                              <button type="button" className="legend-row legend-row-button" key={fund.name} onClick={(event) => { event.stopPropagation(); openFunds() }}>
                                 <span className="legend-dot" style={{ background: fund.color }} />
                                 <span>{fund.name}<small>{shortMoney(fund.value)}</small></span>
                                 <strong>{portfolio.fundsInvested ? ((fund.value / portfolio.fundsInvested) * 100).toFixed(1) : 0}%</strong>
-                              </div>
+                              </button>
                             ))}
                           </div>
                         </div>
                       )}
                     </article>
-                    <article className="panel">
-                      <PanelHeader title="SIP by month" subtitle="Last 12 months across all funds" />
+                    <article className="panel panel-clickable" onClick={openFunds} title="Open mutual funds">
+                      <PanelHeader title="SIP by month" subtitle="Last 12 months across all funds · click to open funds" />
                       {sipTrend.length === 0 ? (
                         <div className="modal-empty"><p>Monthly SIP amounts will chart here.</p></div>
                       ) : (
@@ -1337,7 +1481,7 @@ function App() {
                               <XAxis dataKey="name" tick={{ fontSize: 10, fill: 'var(--muted)' }} axisLine={false} tickLine={false} />
                               <YAxis tick={{ fontSize: 10, fill: 'var(--muted)' }} axisLine={false} tickLine={false} tickFormatter={(value) => shortMoney(Number(value))} width={56} />
                               <Tooltip formatter={(value) => money(Number(value))} />
-                              <Bar dataKey="value" fill="#e8995d" radius={[6, 6, 0, 0]} />
+                              <Bar dataKey="value" fill="#e8995d" radius={[6, 6, 0, 0]} style={{ cursor: 'pointer' }} onClick={openFunds} />
                             </BarChart>
                           </ResponsiveContainer>
                         </div>
@@ -1356,6 +1500,9 @@ function App() {
             members={members}
             selectedMember={selectedMember}
             canEdit={canEdit}
+            liveCaps={liveCaps}
+            filter={stockFilter}
+            onClearFilter={() => setStockFilter(null)}
             onAdd={(memberId) => setModal({ type: 'holding', memberId })}
             onUpdate={saveHolding}
             onRemove={removeHolding}
@@ -1436,7 +1583,10 @@ function App() {
                       <div><span>Holdings</span><strong>{memberHoldings.length}</strong></div>
                     </div>
                     <div className="member-stock-list">
-                      {memberHoldings.slice(0, 3).map((holding) => <span key={holding.id}>{holding.symbol}<small>{holding.cap[0]}</small></span>)}
+                      {memberHoldings.slice(0, 3).map((holding) => {
+                        const cap = liveCapOf(holding.symbol)
+                        return <span key={holding.id}>{holding.symbol}{cap ? <small>{cap[0]}</small> : null}</span>
+                      })}
                       {memberHoldings.length > 3 && <span className="more-stock">+{memberHoldings.length - 3}</span>}
                       {memberHoldings.length === 0 && <em>No stocks added</em>}
                     </div>
@@ -1480,8 +1630,8 @@ function App() {
 
         <nav className="mobile-nav">
           <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}><LayoutDashboard size={20} /><span>Overview</span></button>
-          <button className={view === 'stocks' ? 'active' : ''} onClick={() => setView('stocks')}><BriefcaseBusiness size={20} /><span>Stocks</span></button>
-          <button className={view === 'funds' ? 'active' : ''} onClick={() => setView('funds')}><PiggyBank size={20} /><span>Funds</span></button>
+          <button className={view === 'stocks' ? 'active' : ''} onClick={() => openStocks()}><BriefcaseBusiness size={20} /><span>Stocks</span></button>
+          <button className={view === 'funds' ? 'active' : ''} onClick={openFunds}><PiggyBank size={20} /><span>Funds</span></button>
           <button className={view === 'members' ? 'active' : ''} onClick={() => setView('members')}><UsersRound size={20} /><span>Members</span></button>
           <button className={view === 'profile' || view === 'password' ? 'active' : ''} onClick={() => setView('profile')}><UserRound size={20} /><span>Profile</span></button>
         </nav>
@@ -1990,8 +2140,28 @@ function MoverTable({ rows, loading, empty, positive = false }: {
   )
 }
 
-function Metric({ icon, color, label, value, meta, valueClass = '' }: { icon: React.ReactNode; color: string; label: string; value: string; meta: string; valueClass?: string }) {
-  return <article className="metric-card"><span className={`metric-icon ${color}`}>{icon}</span><div><p>{label}</p><h3 className={valueClass}>{value}</h3></div><span className="metric-meta">{meta}</span></article>
+function Metric({ icon, color, label, value, meta, valueClass = '', onClick }: {
+  icon: React.ReactNode
+  color: string
+  label: string
+  value: string
+  meta: string
+  valueClass?: string
+  onClick?: () => void
+}) {
+  return (
+    <article
+      className={`metric-card${onClick ? ' metric-card-clickable' : ''}`}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onClick() } } : undefined}
+    >
+      <span className={`metric-icon ${color}`}>{icon}</span>
+      <div><p>{label}</p><h3 className={valueClass}>{value}</h3></div>
+      <span className="metric-meta">{meta}</span>
+    </article>
+  )
 }
 
 function PanelHeader({ title, subtitle }: { title: string; subtitle: string }) {
@@ -2158,7 +2328,6 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
     company: '',
     sector: '',
     subSector: '',
-    cap: '' as MarketCap | '',
     broker: 'Groww' as Broker,
     quantity: '',
     avgPrice: '',
@@ -2195,7 +2364,6 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
       company: suggestion.name,
       sector: initial.sector,
       subSector: initial.subSector,
-      cap: capFromMcap(suggestion.mcap) || current.cap,
     }))
     setLookingUp(true)
     const [quote, classified] = await Promise.all([
@@ -2210,7 +2378,6 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
       company: quote?.name || suggestion.name,
       sector: classified.sector,
       subSector: classified.subSector,
-      cap: capFromMcap(quote?.mcap ?? suggestion.mcap, quote?.universe ?? '') || current.cap || 'Large',
     }))
     setSearch(quote?.symbol || suggestion.symbol)
     setLookingUp(false)
@@ -2306,7 +2473,6 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
         company: quote.name || match?.name || current.company,
         sector: classified.sector,
         subSector: classified.subSector,
-        cap: capFromMcap(quote.mcap ?? match?.mcap ?? null, quote.universe) || current.cap || 'Large',
       }))
       setSearch(quote.symbol)
     } else if (match) {
@@ -2329,7 +2495,6 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
         company: form.company.trim(),
         sector: form.sector,
         subSector: form.subSector,
-        cap: form.cap || 'Large',
         broker: form.broker || 'Groww',
         quantity: Number(form.quantity),
         avgPrice: Number(form.avgPrice),
@@ -2407,7 +2572,7 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
                     </ul>
                   )}
                 </div>
-                <p className="stock-lookup-hint">Pick a suggestion to fill symbol, sector, sub-sector and market cap.</p>
+                <p className="stock-lookup-hint">Pick a suggestion to fill symbol, sector and sub-sector. Market cap is calculated live from quotes.</p>
               </div>
               <label className="full-field">Company name<input required value={form.company} onChange={(event) => set('company', event.target.value)} placeholder="Filled from the selected stock" /></label>
               <label>Sector
@@ -2426,16 +2591,6 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
                 <select required value={form.subSector} onChange={(event) => set('subSector', event.target.value)} disabled={!form.sector || lookingUp}>
                   <option value="" disabled>Filled automatically</option>
                   {subSectorOptions.map((subSector) => <option key={subSector}>{subSector}</option>)}
-                </select>
-                </div>
-              </label>
-              <label>Market cap
-                <div className={`select-shell${lookingUp || searching ? ' loading' : ''}`}>
-                <select required value={form.cap} disabled={lookingUp} onChange={(event) => set('cap', event.target.value)}>
-                  <option value="" disabled>Filled automatically</option>
-                  <option>Large</option>
-                  <option>Mid</option>
-                  <option>Small</option>
                 </select>
                 </div>
               </label>

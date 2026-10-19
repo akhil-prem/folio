@@ -1,6 +1,14 @@
 export type MarketCap = 'Large' | 'Mid' | 'Small'
 export type MemberAccess = 'full' | 'readonly'
 
+/** Optional filter applied when opening Stocks from a dashboard widget. */
+export type StockListFilter = {
+  sector?: string
+  subSector?: string
+  cap?: MarketCap
+  broker?: string
+}
+
 export const BROKERS = [
   'Groww',
   'Zerodha',
@@ -59,7 +67,6 @@ export type Holding = {
   company: string
   sector: string
   subSector: string
-  cap: MarketCap
   broker: Broker
   quantity: number
   avgPrice: number

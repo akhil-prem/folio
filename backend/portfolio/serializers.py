@@ -330,7 +330,7 @@ class HoldingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Holding
-        fields = ["id", "memberId", "symbol", "company", "sector", "subSector", "cap", "broker", "quantity", "avgPrice"]
+        fields = ["id", "memberId", "symbol", "company", "sector", "subSector", "broker", "quantity", "avgPrice"]
         read_only_fields = ["id"]
 
     def validate_memberId(self, value):
@@ -338,11 +338,6 @@ class HoldingSerializer(serializers.ModelSerializer):
         owner = portfolio_owner(request.user)
         if not Member.objects.filter(id=value, user=owner).exists():
             raise serializers.ValidationError("Member not found.")
-        return value
-
-    def validate_cap(self, value):
-        if value not in {"Large", "Mid", "Small"}:
-            raise serializers.ValidationError("Market cap must be Large, Mid, or Small.")
         return value
 
     def validate_broker(self, value):

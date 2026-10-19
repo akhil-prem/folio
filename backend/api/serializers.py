@@ -42,7 +42,7 @@ class HoldingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Holding
-        fields = ['id', 'memberId', 'symbol', 'company', 'sector', 'subSector', 'cap', 'quantity', 'avgPrice']
+        fields = ['id', 'memberId', 'symbol', 'company', 'sector', 'subSector', 'quantity', 'avgPrice']
 
     def validate_memberId(self, value):
         owner = self.context['request'].user

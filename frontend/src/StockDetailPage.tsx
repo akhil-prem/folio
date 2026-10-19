@@ -14,7 +14,8 @@ import {
 import { ArrowLeft, Pencil, Trash2 } from 'lucide-react'
 import { fetchStockDetail, fetchStockHistory } from './api'
 import { BusyButton } from './BusyButton'
-import type { Holding, Member, StockDetail, StockPricePoint } from './types'
+import { capFromMcap, mcapFromFundamentals } from './marketCap'
+import type { Holding, MarketCap, Member, StockDetail, StockPricePoint } from './types'
 
 const CHART_COLORS = ['#244d3c', '#3d6853', '#6c8b7c', '#e8995d', '#d9ba59', '#7a9e8a', '#b08d57', '#4f6f62']
 
@@ -49,6 +50,7 @@ type Props = {
   holding: Holding
   members: Member[]
   canEdit: boolean
+  liveCap?: MarketCap | null
   onBack: () => void
   onEdit?: () => void
   onRemove: (holding: Holding) => void | Promise<void>
@@ -73,7 +75,7 @@ function formatAxisDate(ts: number, range: RangeKey) {
   return date.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })
 }
 
-export function StockDetailPage({ holding, members, canEdit, onBack, onEdit, onRemove, removing = false }: Props) {
+export function StockDetailPage({ holding, members, canEdit, liveCap, onBack, onEdit, onRemove, removing = false }: Props) {
   const [detail, setDetail] = useState<StockDetail | null>(null)
   const [points, setPoints] = useState<StockPricePoint[]>([])
   const [range, setRange] = useState<RangeKey>('1Y')
@@ -82,6 +84,8 @@ export function StockDetailPage({ holding, members, canEdit, onBack, onEdit, onR
 
   const owner = members.find((member) => member.id === holding.memberId)
   const invested = holding.quantity * holding.avgPrice
+  const detailMcap = detail ? mcapFromFundamentals(detail.fundamentals) : null
+  const detailCap = capFromMcap(detailMcap) ?? liveCap ?? null
 
   useEffect(() => {
     const controller = new AbortController()
@@ -173,7 +177,7 @@ export function StockDetailPage({ holding, members, canEdit, onBack, onEdit, onR
                   <span>{detail.shortName} · {detail.exchange}</span>
                   <span>{holding.broker || 'Groww'}</span>
                   {detail.industry && <span>{detail.industry}</span>}
-                  <span>{holding.cap} cap</span>
+                  {detailCap && <span>{detailCap} cap</span>}
                   {holding.sector && <span>{holding.sector}</span>}
                 </div>
                 <h2>{detail.name}</h2>
@@ -189,16 +193,17 @@ export function StockDetailPage({ holding, members, canEdit, onBack, onEdit, onR
                 </em>
               </div>
               <div>
+                <span>Market cap</span>
+                <strong>{detailMcap != null ? `₹${num(detailMcap, 0)} Cr` : '—'}</strong>
+                <em>{detailCap ? `${detailCap} cap · live` : 'Live from market'}</em>
+              </div>
+              <div>
                 <span>Day range</span>
                 <strong>{detail.low != null && detail.high != null ? `${money(detail.low, 0)} – ${money(detail.high, 0)}` : '—'}</strong>
               </div>
               <div>
                 <span>52W range</span>
                 <strong>{detail.yearLow != null && detail.yearHigh != null ? `${money(detail.yearLow, 0)} – ${money(detail.yearHigh, 0)}` : '—'}</strong>
-              </div>
-              <div>
-                <span>Volume</span>
-                <strong>{detail.volume != null ? num(detail.volume, 0) : '—'}</strong>
               </div>
             </div>
           </section>

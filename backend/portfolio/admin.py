@@ -18,7 +18,7 @@ class MemberAdmin(admin.ModelAdmin):
 @admin.register(Holding)
 class HoldingAdmin(admin.ModelAdmin):
     list_display = ("symbol", "company", "member", "broker", "quantity", "avg_price")
-    list_filter = ("broker", "cap")
+    list_filter = ("broker",)
 
 
 class SipEntryInline(admin.TabularInline):

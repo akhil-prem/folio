@@ -505,16 +505,79 @@ def _yahoo_equity(symbol):
     }
 
 
+def _parse_mcap_cr(value):
+    """Parse values like '₹8,91,135Cr' or '891135.5' into ₹ Cr."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return _round(value, 2) if value > 0 else None
+    text = str(value).lower().replace(",", "").replace(" ", "").replace("₹", "").replace("rs.", "").replace("rs", "")
+    match = re.search(r"([\d.]+)(cr|crore)?", text)
+    if not match:
+        return None
+    amount = _num(match.group(1))
+    if amount is None or amount <= 0:
+        return None
+    # Raw rupees sometimes arrive without Cr suffix (e.g. 8911350000000)
+    if not match.group(2) and amount > 10_000_000:
+        amount = amount / 10_000_000
+    return _round(amount, 2)
+
+
+def _groww_equity_fundamentals(symbol):
+    """Return mcap (₹ Cr) and pe from Groww company fundamentals."""
+    try:
+        search_id = resolve_stock_search_id(symbol)
+        if not search_id:
+            return None, None
+        company = _groww_get_json(
+            f"https://groww.in/v1/api/stocks_data/v1/company/search_id/{quote(search_id, safe='')}",
+            ttl=30 * 60,
+            key=f"stock-company-{search_id}",
+            timeout=25,
+        )
+    except Exception:
+        return None, None
+    mcap = None
+    pe = None
+    for row in company.get("fundamentals") or []:
+        if not isinstance(row, dict):
+            continue
+        name = (row.get("name") or "").lower()
+        value = row.get("value")
+        if mcap is None and "market cap" in name:
+            mcap = _parse_mcap_cr(value)
+        if pe is None and ("p/e" in name or name.startswith("pe")):
+            pe = _round(_as_float(str(value).replace("%", "").strip()), 2)
+    return mcap, pe
+
+
+def _enrich_quote_fundamentals(symbol, payload):
+    fundamentals = payload.setdefault("fundamentals", {})
+    if fundamentals.get("mcap") is not None and fundamentals.get("pe") is not None:
+        return payload
+    mcap, pe = _groww_equity_fundamentals(symbol)
+    if fundamentals.get("mcap") is None and mcap is not None:
+        fundamentals["mcap"] = mcap
+    if fundamentals.get("pe") is None and pe is not None:
+        fundamentals["pe"] = pe
+    return payload
+
+
 def stock_quote(symbol):
     symbol = re.sub(r"[^A-Z0-9.&-]", "", (symbol or "").strip().upper())
     if not symbol:
         raise LookupError("Stock not found")
     hit = _cached(f"stock-built-{symbol}", 45)
     if hit and hit[0] == 200:
-        return json.loads(hit[1])
+        cached = json.loads(hit[1])
+        # Older cache entries often lack mcap when NSE was blocked — refresh fundamentals.
+        if (cached.get("fundamentals") or {}).get("mcap") is not None:
+            return cached
     payload = _nse_equity(symbol) or _yahoo_equity(symbol)
     if not payload:
         raise LookupError("Stock not found")
+    payload = _enrich_quote_fundamentals(symbol, payload)
     _remember(f"stock-built-{symbol}", 200, json.dumps(payload), "application/json")
     return payload
 

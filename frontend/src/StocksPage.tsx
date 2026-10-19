@@ -3,7 +3,8 @@ import { BriefcaseBusiness, Download, Loader2, Pencil, Plus, Search, Trash2, X }
 import { BusyButton } from './BusyButton'
 import { StockDetailPage } from './StockDetailPage'
 import { SECTORS, SECTOR_TREE } from './sectors'
-import type { Broker, Holding, MarketCap, Member } from './types'
+import { resolveLiveCap } from './marketCap'
+import type { Broker, Holding, MarketCap, Member, StockListFilter } from './types'
 import { BROKERS } from './types'
 
 type RemoveHolding = (holding: Holding) => void | Promise<void>
@@ -42,12 +43,23 @@ type Props = {
   members: Member[]
   selectedMember: string
   canEdit: boolean
+  liveCaps?: Map<string, MarketCap>
+  filter?: StockListFilter | null
+  onClearFilter?: () => void
   onAdd: (memberId?: string) => void
   onUpdate: UpdateHolding
   onRemove: RemoveHolding
 }
 
-export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, onUpdate, onRemove }: Props) {
+const filterLabel = (filter: StockListFilter) => {
+  if (filter.sector) return `Sector: ${filter.sector}`
+  if (filter.subSector) return `Sub-sector: ${filter.subSector}`
+  if (filter.cap) return `${filter.cap} cap`
+  if (filter.broker) return `Broker: ${filter.broker}`
+  return 'Filtered'
+}
+
+export function StocksPage({ holdings, members, selectedMember, canEdit, liveCaps, filter, onClearFilter, onAdd, onUpdate, onRemove }: Props) {
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<HoldingSort>('invested-desc')
   const [showAll, setShowAll] = useState(false)
@@ -74,14 +86,25 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
     [holdings, selectedMember],
   )
 
+  const filteredVisible = useMemo(() => {
+    if (!filter) return visible
+    return visible.filter((holding) => {
+      if (filter.sector && holding.sector !== filter.sector) return false
+      if (filter.subSector && holding.subSector !== filter.subSector) return false
+      if (filter.broker && (holding.broker || 'Groww') !== filter.broker) return false
+      if (filter.cap && resolveLiveCap(holding.symbol, liveCaps) !== filter.cap) return false
+      return true
+    })
+  }, [visible, filter, liveCaps])
+
   const sorted = useMemo(() => {
     const query = search.trim().toLowerCase()
     const filtered = query
-      ? visible.filter((holding) => {
+      ? filteredVisible.filter((holding) => {
           const owner = members.find((member) => member.id === holding.memberId)?.name ?? ''
           return `${holding.symbol} ${holding.company} ${holding.sector} ${holding.subSector} ${holding.broker} ${owner}`.toLowerCase().includes(query)
         })
-      : visible
+      : filteredVisible
     return [...filtered].sort((a, b) => {
       if (sort === 'invested-asc') return investedOf(a) - investedOf(b)
       if (sort === 'symbol-asc') return a.symbol.localeCompare(b.symbol)
@@ -89,9 +112,9 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
       if (sort === 'sector-asc') return `${a.sector} ${a.subSector}`.localeCompare(`${b.sector} ${b.subSector}`)
       return investedOf(b) - investedOf(a)
     })
-  }, [visible, members, search, sort])
+  }, [filteredVisible, members, search, sort])
 
-  const total = visible.reduce((sum, holding) => sum + investedOf(holding), 0)
+  const total = filteredVisible.reduce((sum, holding) => sum + investedOf(holding), 0)
   const detailHolding = holdings.find((holding) => holding.id === detailId) ?? null
   const editingHolding = editHolding
     ? holdings.find((holding) => holding.id === editHolding.id) ?? editHolding
@@ -104,6 +127,7 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
           holding={detailHolding}
           members={members}
           canEdit={canEdit}
+          liveCap={resolveLiveCap(detailHolding.symbol, liveCaps)}
           onBack={() => setDetailId(null)}
           onEdit={canEdit ? () => setEditHolding(detailHolding) : undefined}
           onRemove={deleteHolding}
@@ -131,7 +155,7 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
       company: holding.company,
       sector: holding.sector,
       subSector: holding.subSector,
-      marketCap: holding.cap,
+      marketCap: resolveLiveCap(holding.symbol, liveCaps) ?? '—',
       broker: holding.broker || 'Groww',
       quantity: holding.quantity,
       averagePrice: holding.avgPrice,
@@ -169,7 +193,7 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
           {search && <button className="clear-search" onClick={() => setSearch('')} aria-label="Clear search"><X size={14} /></button>}
         </div>
         <div className="mf-toolbar-meta">
-          <span>{visible.length} stocks · {shortMoney(total)} invested</span>
+          <span>{filteredVisible.length}{filter ? ` of ${visible.length}` : ''} stocks · {shortMoney(total)} invested</span>
           {canEdit && (
             <button
               className="button secondary"
@@ -181,6 +205,15 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
         </div>
       </section>
 
+      {filter && (
+        <div className="stock-filter-bar">
+          <span>Showing {filterLabel(filter)}</span>
+          <button type="button" className="button ghost" onClick={() => onClearFilter?.()}>
+            <X size={14} /> Clear filter
+          </button>
+        </div>
+      )}
+
       {visible.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon"><BriefcaseBusiness size={28} /></div>
@@ -190,6 +223,15 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
             <button className="button primary" onClick={() => onAdd(selectedMember === 'all' ? undefined : selectedMember)}>
               <Plus size={17} /> Add stock
             </button>
+          )}
+        </div>
+      ) : filteredVisible.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon"><BriefcaseBusiness size={28} /></div>
+          <h3>No stocks match this filter</h3>
+          <p>{filter ? filterLabel(filter) : 'Try another filter from the dashboard.'}</p>
+          {onClearFilter && (
+            <button type="button" className="button secondary" onClick={onClearFilter}>Clear filter</button>
           )}
         </div>
       ) : (
@@ -227,6 +269,7 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
               <tbody>
                 {(showAll ? sorted : sorted.slice(0, 12)).map((holding) => {
                   const owner = members.find((member) => member.id === holding.memberId)
+                  const liveCap = resolveLiveCap(holding.symbol, liveCaps)
                   return (
                     <tr
                       key={holding.id}
@@ -237,7 +280,9 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, onAdd, 
                         <div className="holding-stock-cell">
                           <strong>{holding.symbol}</strong>
                           <span>{holding.company}</span>
-                          <small className="holding-sector-line">{holding.sector} · {holding.subSector} · {holding.cap}</small>
+                          <small className="holding-sector-line">
+                            {holding.sector} · {holding.subSector}{liveCap ? ` · ${liveCap}` : ''}
+                          </small>
                         </div>
                       </td>
                       <td>{holding.broker || 'Groww'}</td>
@@ -326,7 +371,6 @@ function EditHoldingModal({
   const [broker, setBroker] = useState<Broker>(holding.broker || 'Groww')
   const [sector, setSector] = useState(holding.sector)
   const [subSector, setSubSector] = useState(holding.subSector)
-  const [cap, setCap] = useState<MarketCap>(holding.cap || 'Large')
   const [quantity, setQuantity] = useState(String(holding.quantity))
   const [avgPrice, setAvgPrice] = useState(String(holding.avgPrice))
   const [error, setError] = useState('')
@@ -364,7 +408,6 @@ function EditHoldingModal({
         broker,
         sector,
         subSector,
-        cap,
         quantity: qty,
         avgPrice: price,
       })
@@ -408,13 +451,6 @@ function EditHoldingModal({
           <label>Sub-sector
             <select required value={subSector} onChange={(event) => setSubSector(event.target.value)} disabled={!sector}>
               {subSectorOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
-          </label>
-          <label>Market cap
-            <select required value={cap} onChange={(event) => setCap(event.target.value as MarketCap)}>
-              <option value="Large">Large</option>
-              <option value="Mid">Mid</option>
-              <option value="Small">Small</option>
             </select>
           </label>
           <label>Quantity
