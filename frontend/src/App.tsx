@@ -319,16 +319,6 @@ async function searchStocks(query: string, signal?: AbortSignal): Promise<StockS
   return rows
 }
 
-async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
-  try {
-    const response = await apiFetch(`/api/stocks/${encodeURIComponent(symbol)}`)
-    if (!response.ok) return null
-    return parseStockQuote(await response.json())
-  } catch {
-    return null
-  }
-}
-
 const profileCache = new Map<string, StockSuggestion>()
 
 async function fetchYahooProfile(symbol: string): Promise<StockSuggestion | null> {
