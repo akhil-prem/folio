@@ -18,6 +18,7 @@ urlpatterns = [
     path("nse-movers", views.NseMoversView.as_view()),
     path("nse-equities", views.NseEquitiesView.as_view()),
     path("stock-search", views.StockSearchView.as_view()),
+    path("stock-suggest", views.StockSuggestView.as_view()),
     path("groww-search", views.GrowwSearchView.as_view()),
     path("groww-company", views.GrowwCompanyView.as_view()),
     path("mf-search", views.MfSearchView.as_view()),

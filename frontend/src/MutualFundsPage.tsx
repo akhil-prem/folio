@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarDays, Loader2, PiggyBank, Plus, Trash2, X } from 'lucide-react'
+import { CalendarDays, Loader2, PiggyBank, Plus, Search, Trash2, X } from 'lucide-react'
 import { fetchMutualFundScheme, searchMutualFunds } from './api'
 import { BusyButton } from './BusyButton'
 import { MutualFundDetailPage } from './MutualFundDetailPage'
@@ -23,9 +23,6 @@ const MONTHS = [
 
 const money = (amount: number) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(amount)
-
-const shortMoney = (amount: number) =>
-  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', notation: 'compact', maximumFractionDigits: 1 }).format(amount)
 
 const monthLabel = (month: number, year: number) => `${MONTHS[month - 1].slice(0, 3)} ${year}`
 
@@ -146,7 +143,7 @@ export function MutualFundsPage({
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search mutual funds..." />
         </div>
         <div className="mf-toolbar-meta">
-          <span>{visible.length} funds · {shortMoney(total)} invested</span>
+          <span>{visible.length} funds · {money(total)} invested</span>
           {canEdit && (
             <button className="button secondary" onClick={() => setFundModal(true)}><Plus size={18} /> Add fund</button>
           )}
@@ -197,7 +194,7 @@ export function MutualFundsPage({
                 <h3>{fund.name}</h3>
                 <p>{fund.amc || 'AMC not set'}{fund.folioNumber ? ` · Folio ${fund.folioNumber}` : ''}</p>
                 <div className="member-stat-row">
-                  <div><span>Total invested</span><strong>{shortMoney(fund.totalInvested)}</strong></div>
+                  <div><span>Total invested</span><strong>{money(fund.totalInvested)}</strong></div>
                   <div><span>SIP span</span><strong>{formatSipSpan(fund.sipCount)}</strong></div>
                 </div>
                 <div className="mf-card-summary">
@@ -432,7 +429,7 @@ function FundModal({
             setSearching(false)
           }
         })
-    }, 220)
+    }, 280)
     return () => {
       controller.abort()
       window.clearTimeout(timer)
@@ -517,21 +514,26 @@ function FundModal({
         </div>
         <div className="stock-combobox-wrap">
           <span className="field-label">Scheme name</span>
-          <div className={`stock-combobox${open ? ' open' : ''}`}>
+          <div className="stock-combobox-anchor">
+          <div className={`stock-combobox${open ? ' open' : ''}${searching || loadingScheme ? ' loading' : ''}`}>
+            <Search size={16} />
             <input
               autoFocus
               required
               value={query}
+              disabled={loadingScheme}
               placeholder="Search e.g. Parag Parikh Flexi Cap"
               aria-autocomplete="list"
               aria-expanded={open}
+              aria-busy={searching || loadingScheme}
               aria-controls="mf-suggestions"
               onChange={(event) => {
                 setQuery(event.target.value)
                 setSelected(null)
                 setScheme(null)
+                if (event.target.value.trim().length >= 2) setOpen(true)
               }}
-              onFocus={() => suggestions.length > 0 && setOpen(true)}
+              onFocus={() => (suggestions.length > 0 || searching) && setOpen(true)}
               onKeyDown={(event) => {
                 if (!open || suggestions.length === 0) return
                 if (event.key === 'ArrowDown') {
@@ -548,37 +550,43 @@ function FundModal({
                 }
               }}
             />
-            {selected && (
+            {(searching || loadingScheme) && <Loader2 className="spin" size={16} />}
+            {selected && !loadingScheme && (
               <button type="button" className="stock-combobox-clear" onClick={clearSelection}>Clear</button>
             )}
-            {open && (
-              <ul className="stock-suggestions mf-suggestions" id="mf-suggestions" role="listbox">
-                {suggestions.length === 0 && !searching ? (
-                  <li className="stock-suggestion-empty">No matching schemes</li>
-                ) : suggestions.map((item, index) => (
-                  <li key={item.searchId} role="option" aria-selected={index === activeIndex}>
-                    <button
-                      type="button"
-                      className={index === activeIndex ? 'active' : ''}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onMouseEnter={() => setActiveIndex(index)}
-                      onClick={() => void applySuggestion(item)}
-                    >
-                      <strong>{item.plan || 'Scheme'}</strong>
-                      <span>{item.name}</span>
-                      <small>{item.schemeCode || 'MF'}</small>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
+          </div>
+          {open && query.trim().length >= 2 && !selected && (
+            <ul className="stock-suggestions mf-suggestions" id="mf-suggestions" role="listbox">
+              {searching && suggestions.length === 0 ? (
+                <li className="stock-suggestion-empty stock-suggestion-loading"><Loader2 className="spin" size={14} /> Searching schemes…</li>
+              ) : suggestions.length === 0 ? (
+                <li className="stock-suggestion-empty">No matching schemes</li>
+              ) : suggestions.map((item, index) => (
+                <li key={item.searchId} role="option" aria-selected={index === activeIndex}>
+                  <button
+                    type="button"
+                    className={index === activeIndex ? 'active' : ''}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onClick={() => void applySuggestion(item)}
+                  >
+                    <strong>{item.plan || 'Scheme'}</strong>
+                    <span>{item.name}</span>
+                    <small>{item.schemeCode || 'MF'}</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           </div>
           <p className="stock-lookup-hint">
             {loadingScheme
               ? 'Loading scheme details…'
-              : selected
-                ? 'Scheme selected — AMC and category fill in automatically.'
-                : 'Type at least 2 characters and pick a suggestion.'}
+              : searching
+                ? 'Searching schemes…'
+                : selected
+                  ? 'Scheme selected — AMC and category fill in automatically.'
+                  : 'Type at least 2 characters and pick a suggestion.'}
           </p>
         </div>
         {scheme && (

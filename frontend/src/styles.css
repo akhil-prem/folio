@@ -584,6 +584,7 @@ html[data-theme='dark'] .mf-add-sip { background: #22352c; color: #9fcdb0; borde
 .modal-empty p { margin: 0; font-size: 12px; }
 .stock-search-field { grid-column: 1 / -1; display: grid; gap: 7px; color: #555b56; font-size: 11px; font-weight: 600; }
 .stock-combobox-wrap { position: relative; display: grid; gap: 7px; }
+.stock-combobox-anchor { position: relative; }
 .stock-combobox { height: 43px; padding: 0 12px; display: flex; align-items: center; gap: 8px; border: 1px solid #dcd9d1; border-radius: 8px; color: #8b918b; background: #fff; }
 .stock-combobox.open, .stock-combobox:focus-within { border-color: #6c8b7c; box-shadow: 0 0 0 3px rgba(61,104,83,.09); }
 .stock-combobox input, .modal .stock-combobox input { height: 100%; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: transparent; font-size: 12px; font-weight: 500; }
@@ -596,6 +597,7 @@ html[data-theme='dark'] .mf-add-sip { background: #22352c; color: #9fcdb0; borde
 .stock-suggestions span { overflow: hidden; color: #6e746e; font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .stock-suggestions small { color: #8b918b; font-size: 10px; font-weight: 600; }
 .stock-suggestion-empty { padding: 12px 10px; color: #8a8e88; font-size: 12px; font-weight: 500; }
+.stock-suggestion-loading { display: flex; align-items: center; gap: 8px; }
 .stock-lookup-hint { margin: 0; color: #8a8e88; font-size: 10px; font-weight: 500; }
 .spin { animation: spin .8s linear infinite; }
 

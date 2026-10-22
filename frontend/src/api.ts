@@ -182,12 +182,19 @@ export async function fetchMutualFunds() {
   return readJson<MutualFund[]>(response)
 }
 
+const mfSuggestCache = new Map<string, { at: number; rows: MfSuggestion[] }>()
+
 export async function searchMutualFunds(query: string, signal?: AbortSignal) {
   const q = query.trim()
   if (q.length < 2) return [] as MfSuggestion[]
+  const key = q.toLowerCase()
+  const hit = mfSuggestCache.get(key)
+  if (hit && Date.now() - hit.at < 2 * 60 * 1000) return hit.rows
   const response = await apiFetch(`/api/mf-search?q=${encodeURIComponent(q)}`, { signal })
   const payload = await readJson<{ results: MfSuggestion[] }>(response)
-  return payload.results ?? []
+  const rows = payload.results ?? []
+  mfSuggestCache.set(key, { at: Date.now(), rows })
+  return rows
 }
 
 export async function fetchMutualFundScheme(searchId: string, signal?: AbortSignal) {

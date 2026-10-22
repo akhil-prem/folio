@@ -22,9 +22,6 @@ const CHART_COLORS = ['#244d3c', '#3d6853', '#6c8b7c', '#e8995d', '#d9ba59', '#7
 const money = (amount: number, digits = 2) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: digits }).format(amount)
 
-const compact = (amount: number) =>
-  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', notation: 'compact', maximumFractionDigits: 1 }).format(amount)
-
 const pct = (value: number | null | undefined, digits = 2) =>
   value == null || Number.isNaN(value) ? '—' : `${value > 0 ? '+' : ''}${value.toFixed(digits)}%`
 
@@ -211,7 +208,7 @@ export function StockDetailPage({ holding, members, canEdit, liveCap, onBack, on
           <section className="mf-your-sip panel">
             <div>
               <span>Your holding{owner ? ` · ${owner.name}` : ''}</span>
-              <strong>{compact(invested)}</strong>
+              <strong>{money(invested)}</strong>
               <em>{holding.quantity} shares @ {money(holding.avgPrice)}</em>
             </div>
             <div className="stock-holding-pnl">

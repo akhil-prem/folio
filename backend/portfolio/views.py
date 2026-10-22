@@ -285,6 +285,15 @@ class StockSearchView(APIView):
         )
 
 
+class StockSuggestView(APIView):
+    def get(self, request):
+        query = (request.query_params.get("q") or "").strip()
+        try:
+            return Response({"results": market.stock_suggestions(query)})
+        except Exception as exc:
+            return Response({"error": str(exc) or "Stock search unavailable"}, status=502)
+
+
 class GrowwSearchView(APIView):
     def get(self, request):
         query = (request.query_params.get("q") or "").strip()

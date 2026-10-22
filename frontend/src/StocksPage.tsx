@@ -14,12 +14,11 @@ type HoldingSort = 'invested-desc' | 'invested-asc' | 'symbol-asc' | 'quantity-d
 
 const investedOf = (holding: Holding) => holding.quantity * holding.avgPrice
 
-const shortMoney = (amount: number) =>
+const money = (amount: number) =>
   new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
-    notation: 'compact',
-    maximumFractionDigits: 1,
+    maximumFractionDigits: 2,
   }).format(amount)
 
 const csvCell = (value: string | number) => {
@@ -193,7 +192,7 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, liveCap
           {search && <button className="clear-search" onClick={() => setSearch('')} aria-label="Clear search"><X size={14} /></button>}
         </div>
         <div className="mf-toolbar-meta">
-          <span>{filteredVisible.length}{filter ? ` of ${visible.length}` : ''} stocks · {shortMoney(total)} invested</span>
+          <span>{filteredVisible.length}{filter ? ` of ${visible.length}` : ''} stocks · {money(total)} invested</span>
           {canEdit && (
             <button
               className="button secondary"
@@ -288,8 +287,8 @@ export function StocksPage({ holdings, members, selectedMember, canEdit, liveCap
                       <td>{holding.broker || 'Groww'}</td>
                       <td>{owner?.name.split(' ')[0] ?? '—'}</td>
                       <td>{holding.quantity}</td>
-                      <td>{shortMoney(holding.avgPrice)}</td>
-                      <td>{shortMoney(investedOf(holding))}</td>
+                      <td>{money(holding.avgPrice)}</td>
+                      <td>{money(investedOf(holding))}</td>
                       <td onClick={(event) => event.stopPropagation()}>
                         {canEdit ? (
                           <div className="holding-row-actions">

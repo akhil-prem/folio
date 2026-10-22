@@ -74,8 +74,8 @@ def nse_session() -> requests.Session:
         "Accept": "application/json, text/plain, */*",
     })
     try:
-        session.get("https://www.nseindia.com/", timeout=15)
-        session.get("https://www.nseindia.com/market-data/live-equity-market", timeout=15)
+        session.get("https://www.nseindia.com/", timeout=4)
+        session.get("https://www.nseindia.com/market-data/live-equity-market", timeout=4)
     except requests.RequestException:
         pass
     _nse_session = session
@@ -90,12 +90,12 @@ def nse_get(url: str, *, ttl=30, key=None, accept="application/json"):
         return _response(*hit)
     session = nse_session()
     try:
-        remote = session.get(url, headers={"Accept": accept}, timeout=20)
+        remote = session.get(url, headers={"Accept": accept}, timeout=6)
         if remote.status_code in {401, 403}:
             global _nse_ready_at
             _nse_ready_at = 0
             session = nse_session()
-            remote = session.get(url, headers={"Accept": accept}, timeout=20)
+            remote = session.get(url, headers={"Accept": accept}, timeout=6)
         body = remote.text
         content_type = remote.headers.get("content-type", accept)
         if remote.status_code < 400:
@@ -534,7 +534,7 @@ def _groww_equity_fundamentals(symbol):
             f"https://groww.in/v1/api/stocks_data/v1/company/search_id/{quote(search_id, safe='')}",
             ttl=30 * 60,
             key=f"stock-company-{search_id}",
-            timeout=25,
+            timeout=8,
         )
     except Exception:
         return None, None
@@ -574,7 +574,8 @@ def stock_quote(symbol):
         # Older cache entries often lack mcap when NSE was blocked — refresh fundamentals.
         if (cached.get("fundamentals") or {}).get("mcap") is not None:
             return cached
-    payload = _nse_equity(symbol) or _yahoo_equity(symbol)
+    # Yahoo answers from Render. NSE often blocks datacenter IPs and burns the worker on retries.
+    payload = _yahoo_equity(symbol) or _nse_equity(symbol)
     if not payload:
         raise LookupError("Stock not found")
     payload = _enrich_quote_fundamentals(symbol, payload)
@@ -798,6 +799,124 @@ def _groww_get_json(url: str, *, ttl: int, key: str, timeout: int = 25):
     return json.loads(body)
 
 
+def _suggestion_symbol(row: dict) -> str:
+    for key in ("nse_scrip_code", "symbol", "company_short_name"):
+        value = re.sub(r"[^A-Z0-9.&-]", "", str(row.get(key) or "").strip().upper())
+        if value and not re.search(r"-(RE|PP|W\d+)$", value) and len(value) <= 20:
+            return value
+    return ""
+
+
+def _rank_suggestions(query: str, rows: list[dict]) -> list[dict]:
+    needle = query.strip().lower()
+
+    def score(row):
+        symbol = row["symbol"].lower()
+        name = row["name"].lower()
+        if symbol == needle:
+            return 0
+        if symbol.startswith(needle):
+            return 1
+        if name.startswith(needle):
+            return 2
+        if needle in name:
+            return 3
+        if needle in symbol:
+            return 4
+        return 5
+
+    return sorted(rows, key=lambda row: (score(row), row["symbol"]))[:12]
+
+
+def _groww_stock_suggestions(query: str) -> list[dict]:
+    try:
+        payload = _groww_get_json(
+            "https://groww.in/v1/api/search/v1/entity"
+            f"?app=false&entity_type=Stocks&page=0&q={quote(query, safe='')}&size=12&web=true",
+            ttl=10 * 60,
+            key=f"groww-suggest-{query.lower()}",
+            timeout=5,
+        )
+    except Exception:
+        return []
+    rows = []
+    seen = set()
+    for item in payload.get("content") or []:
+        if not isinstance(item, dict):
+            continue
+        entity = (item.get("entity_type") or "").lower()
+        if entity and entity not in {"stocks", "stock"}:
+            continue
+        symbol = _suggestion_symbol(item)
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": (item.get("title") or item.get("company_short_name") or symbol).strip(),
+                "sector": "",
+                "industry": "",
+                "mcap": None,
+                "searchId": (item.get("search_id") or item.get("id") or "").strip(),
+            }
+        )
+    return rows
+
+
+def _yahoo_stock_suggestions(query: str) -> list[dict]:
+    payload = _get_json(
+        "https://query2.finance.yahoo.com/v1/finance/search"
+        f"?q={quote(query, safe='')}&quotesCount=12&newsCount=0&listsCount=0",
+        timeout=5,
+    )
+    rows = []
+    seen = set()
+    for item in ((payload or {}).get("quotes") or []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("quoteType") and item.get("quoteType") != "EQUITY":
+            continue
+        if item.get("exchange") and item.get("exchange") not in {"NSI", "BSE"}:
+            continue
+        symbol = re.sub(r"\.(NS|BO)$", "", str(item.get("symbol") or ""), flags=re.I).upper()
+        symbol = re.sub(r"[^A-Z0-9.&-]", "", symbol)
+        if not symbol or symbol in seen or re.search(r"-(RE|PP|W\d+)$", symbol):
+            continue
+        seen.add(symbol)
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": (item.get("longname") or item.get("shortname") or symbol).strip(),
+                "sector": item.get("sectorDisp") or item.get("sector") or "",
+                "industry": item.get("industryDisp") or item.get("industry") or "",
+                "mcap": None,
+                "searchId": "",
+            }
+        )
+    return rows
+
+
+def stock_suggestions(query: str) -> list[dict]:
+    """One cached lookup for the add-stock box. Groww first, Yahoo if Groww is slow or empty."""
+    query = (query or "").strip()
+    if len(query) < 2:
+        return []
+    key = f"stock-suggest-{query.lower()}"
+    hit = _cached(key, 10 * 60)
+    if hit and hit[0] == 200:
+        try:
+            return json.loads(hit[1])
+        except json.JSONDecodeError:
+            pass
+    rows = _rank_suggestions(query, _groww_stock_suggestions(query) or _yahoo_stock_suggestions(query))
+    _remember(key, 200, json.dumps(rows), "application/json")
+    if not rows:
+        # Don't pin a transient empty result for the full 10 minutes.
+        _cache[key] = (time.time() - (10 * 60 - 20), 200, json.dumps(rows), "application/json")
+    return rows
+
+
 def mf_search(query: str, size: int = 12):
     query = (query or "").strip()
     if len(query) < 2:
@@ -806,8 +925,9 @@ def mf_search(query: str, size: int = 12):
     payload = _groww_get_json(
         "https://groww.in/v1/api/search/v1/entity"
         f"?app=false&page=0&q={quote(query, safe='')}&size={size}&web=true",
-        ttl=60,
+        ttl=10 * 60,
         key=f"mf-search-{query.lower()}-{size}",
+        timeout=8,
     )
     results = []
     for row in payload.get("content") or []:

@@ -269,24 +269,6 @@ function nseSymbolFromYahoo(symbol: string): string {
   return symbol.replace(/\.(NS|BO)$/i, '').toUpperCase()
 }
 
-function parseEquityCsv(csv: string): StockSuggestion[] {
-  const rows: StockSuggestion[] = []
-  const seen = new Set<string>()
-  for (const line of csv.split(/\r?\n/).slice(1)) {
-    const match = line.match(/^"?([^",]+)"?,\s*"?(.+?)"?,\s*"?([A-Z]{2,3})"?,/i)
-    if (!match) continue
-    const symbol = match[1].trim().toUpperCase()
-    const name = match[2].trim()
-    const series = match[3].trim().toUpperCase()
-    if (!symbol || !name || seen.has(symbol)) continue
-    if (!['EQ', 'BE', 'SM', 'BZ'].includes(series)) continue
-    if (/-(RE|PP|W\d+)$/i.test(symbol)) continue
-    seen.add(symbol)
-    rows.push({ symbol, name, sector: '', industry: '', mcap: null })
-  }
-  return rows
-}
-
 function parseYahooSuggestions(payload: unknown): StockSuggestion[] {
   if (!payload || typeof payload !== 'object') return []
   const data = payload as {
@@ -321,109 +303,20 @@ function parseYahooSuggestions(payload: unknown): StockSuggestion[] {
   return rows
 }
 
-function parseGrowwSuggestions(payload: unknown): StockSuggestion[] {
-  if (!payload || typeof payload !== 'object') return []
-  const data = payload as {
-    content?: Array<{
-      entity_type?: string
-      nse_scrip_code?: string
-      title?: string
-      company_short_name?: string
-      search_id?: string
-      id?: string
-    }>
-  }
-  const seen = new Set<string>()
-  const rows: StockSuggestion[] = []
-  for (const item of data.content ?? []) {
-    if (item.entity_type && item.entity_type !== 'Stocks') continue
-    const symbol = String(item.nse_scrip_code ?? '').toUpperCase()
-    if (!symbol || seen.has(symbol) || /-(RE|PP|W\d+)$/i.test(symbol)) continue
-    seen.add(symbol)
-    rows.push({
-      symbol,
-      name: String(item.title || item.company_short_name || symbol),
-      sector: '',
-      industry: '',
-      mcap: null,
-      searchId: item.search_id || item.id || '',
-    })
-  }
-  return rows
-}
-
-function rankSuggestions(rows: StockSuggestion[], query: string): StockSuggestion[] {
-  const needle = query.trim().toLowerCase()
-  const upper = needle.toUpperCase()
-  return [...rows]
-    .map((row) => {
-      const symbol = row.symbol.toLowerCase()
-      const name = row.name.toLowerCase()
-      let score = 80
-      if (row.symbol === upper) score = 0
-      else if (symbol.startsWith(needle)) score = 1
-      else if (name.startsWith(needle)) score = 2
-      else if (name.split(/[^a-z0-9]+/).some((part) => part.startsWith(needle))) score = 3
-      else if (name.includes(needle)) score = 4
-      else if (symbol.includes(needle)) score = 5
-      return { row, score }
-    })
-    .filter((item) => item.score < 80)
-    .sort((a, b) => a.score - b.score || a.row.symbol.localeCompare(b.row.symbol))
-    .map((item) => item.row)
-}
-
-function mergeSuggestions(...lists: StockSuggestion[][]): StockSuggestion[] {
-  const merged = new Map<string, StockSuggestion>()
-  for (const list of lists) {
-    for (const row of list) {
-      const previous = merged.get(row.symbol)
-      merged.set(row.symbol, {
-        symbol: row.symbol,
-        name: row.name || previous?.name || row.symbol,
-        sector: row.sector || previous?.sector || '',
-        industry: row.industry || previous?.industry || '',
-        mcap: row.mcap ?? previous?.mcap ?? null,
-        searchId: row.searchId || previous?.searchId,
-        summary: row.summary || previous?.summary,
-      })
-    }
-  }
-  return [...merged.values()]
-}
-
-let nseEquityCache: StockSuggestion[] | null = null
-let nseEquityPromise: Promise<StockSuggestion[]> | null = null
-
-async function loadNseEquities(): Promise<StockSuggestion[]> {
-  if (nseEquityCache) return nseEquityCache
-  if (nseEquityPromise) return nseEquityPromise
-  nseEquityPromise = apiFetch('/api/nse-equities')
-    .then(async (response) => {
-      if (!response.ok) throw new Error('nse list failed')
-      nseEquityCache = parseEquityCsv(await response.text())
-      return nseEquityCache
-    })
-    .catch(() => {
-      nseEquityPromise = null
-      return [] as StockSuggestion[]
-    })
-  return nseEquityPromise
-}
+const stockSuggestCache = new Map<string, { at: number; rows: StockSuggestion[] }>()
 
 async function searchStocks(query: string, signal?: AbortSignal): Promise<StockSuggestion[]> {
   const q = query.trim()
   if (q.length < 2) return []
-  const [local, yahoo, groww] = await Promise.all([
-    loadNseEquities().then((list) => rankSuggestions(list, q).slice(0, 20)),
-    apiFetch(`/api/stock-search?q=${encodeURIComponent(q)}`, { signal })
-      .then(async (response) => (response.ok ? parseYahooSuggestions(await response.json()) : []))
-      .catch(() => [] as StockSuggestion[]),
-    apiFetch(`/api/groww-search?q=${encodeURIComponent(q)}`, { signal })
-      .then(async (response) => (response.ok ? parseGrowwSuggestions(await response.json()) : []))
-      .catch(() => [] as StockSuggestion[]),
-  ])
-  return rankSuggestions(mergeSuggestions(local, groww, yahoo), q).slice(0, 12)
+  const key = q.toLowerCase()
+  const hit = stockSuggestCache.get(key)
+  if (hit && Date.now() - hit.at < 2 * 60 * 1000) return hit.rows
+  const response = await apiFetch(`/api/stock-suggest?q=${encodeURIComponent(q)}`, { signal })
+  if (!response.ok) return []
+  const payload = await response.json() as { results?: StockSuggestion[] }
+  const rows = payload.results ?? []
+  stockSuggestCache.set(key, { at: Date.now(), rows })
+  return rows
 }
 
 async function fetchStockQuote(symbol: string): Promise<StockQuote | null> {
@@ -459,24 +352,6 @@ async function fetchYahooProfile(symbol: string): Promise<StockSuggestion | null
   }
 }
 
-async function fetchGrowwProfile(searchId: string): Promise<{ industry: string; summary: string } | null> {
-  if (!searchId) return null
-  try {
-    const response = await apiFetch(`/api/groww-company?id=${encodeURIComponent(searchId)}`)
-    if (!response.ok) return null
-    const payload = await response.json() as {
-      header?: { industryName?: string }
-      details?: { businessSummary?: string }
-    }
-    return {
-      industry: payload.header?.industryName || '',
-      summary: payload.details?.businessSummary || '',
-    }
-  } catch {
-    return null
-  }
-}
-
 async function classifyListedStock(input: {
   symbol: string
   name?: string
@@ -485,16 +360,13 @@ async function classifyListedStock(input: {
   searchId?: string
   summary?: string
 }) {
-  const [yahoo, groww] = await Promise.all([
-    fetchYahooProfile(input.symbol),
-    fetchGrowwProfile(input.searchId || ''),
-  ])
+  const yahoo = input.industry || input.sector ? null : await fetchYahooProfile(input.symbol)
   return classifyStock({
     industry: yahoo?.industry || input.industry,
     sector: yahoo?.sector || input.sector,
     name: yahoo?.name || input.name,
     symbol: input.symbol,
-    summary: groww?.summary || input.summary,
+    summary: input.summary,
   })
 }
 
@@ -2366,25 +2238,16 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
       subSector: initial.subSector,
     }))
     setLookingUp(true)
-    const [quote, classified] = await Promise.all([
-      fetchStockQuote(suggestion.symbol),
-      classifyListedStock(suggestion),
-    ])
+    const classified = await classifyListedStock(suggestion)
     if (requestId !== lookupRef.current) return
-    selectedSymbolRef.current = quote?.symbol || suggestion.symbol
     setForm((current) => ({
       ...current,
-      symbol: quote?.symbol || suggestion.symbol,
-      company: quote?.name || suggestion.name,
+      symbol: suggestion.symbol,
+      company: suggestion.name || current.company,
       sector: classified.sector,
       subSector: classified.subSector,
     }))
-    setSearch(quote?.symbol || suggestion.symbol)
     setLookingUp(false)
-  }, [])
-
-  useEffect(() => {
-    void loadNseEquities()
   }, [])
 
   useEffect(() => {
@@ -2408,7 +2271,7 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
           setSuggestions([])
         })
         .finally(() => setSearching(false))
-    }, 180)
+    }, 280)
     return () => {
       window.clearTimeout(timer)
       controller.abort()
@@ -2453,29 +2316,10 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
     if (symbol.length < 3) return
     const requestId = ++lookupRef.current
     setLookingUp(true)
-    const quote = await fetchStockQuote(symbol)
-    if (requestId !== lookupRef.current) return
     const extras = await searchStocks(symbol).catch(() => [] as StockSuggestion[])
-    const match = extras.find((item) => item.symbol === symbol)
-    if (quote) {
-      selectedSymbolRef.current = quote.symbol
-      const classified = await classifyListedStock({
-        symbol,
-        name: quote.name || match?.name,
-        industry: match?.industry,
-        sector: match?.sector || quote.sector,
-        searchId: match?.searchId,
-      })
-      if (requestId !== lookupRef.current) return
-      setForm((current) => ({
-        ...current,
-        symbol: quote.symbol,
-        company: quote.name || match?.name || current.company,
-        sector: classified.sector,
-        subSector: classified.subSector,
-      }))
-      setSearch(quote.symbol)
-    } else if (match) {
+    if (requestId !== lookupRef.current) return
+    const match = extras.find((item) => item.symbol === symbol) ?? extras[0]
+    if (match) {
       void applySuggestion(match)
       return
     }
