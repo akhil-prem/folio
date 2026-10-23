@@ -305,6 +305,29 @@ function parseYahooSuggestions(payload: unknown): StockSuggestion[] {
 
 const stockSuggestCache = new Map<string, { at: number; rows: StockSuggestion[] }>()
 
+function matchesStockQuery(row: StockSuggestion, query: string) {
+  const needle = query.toLowerCase()
+  return row.symbol.toLowerCase().includes(needle) || row.name.toLowerCase().includes(needle)
+}
+
+/** Instant matches from an earlier, shorter query while the latest search is still in flight. */
+function cachedStockMatches(query: string): StockSuggestion[] {
+  const needle = query.trim().toLowerCase()
+  if (needle.length < 2) return []
+  const now = Date.now()
+  let bestKey = ''
+  let best: StockSuggestion[] = []
+  for (const [key, hit] of stockSuggestCache) {
+    if (now - hit.at > 2 * 60 * 1000) continue
+    if (!needle.startsWith(key) || key.length < bestKey.length) continue
+    const rows = hit.rows.filter((row) => matchesStockQuery(row, needle))
+    if (!rows.length) continue
+    bestKey = key
+    best = rows
+  }
+  return best.slice(0, 12)
+}
+
 async function searchStocks(query: string, signal?: AbortSignal): Promise<StockSuggestion[]> {
   const q = query.trim()
   if (q.length < 2) return []
@@ -312,7 +335,7 @@ async function searchStocks(query: string, signal?: AbortSignal): Promise<StockS
   const hit = stockSuggestCache.get(key)
   if (hit && Date.now() - hit.at < 2 * 60 * 1000) return hit.rows
   const response = await apiFetch(`/api/stock-suggest?q=${encodeURIComponent(q)}`, { signal })
-  if (!response.ok) return []
+  if (!response.ok) return cachedStockMatches(q)
   const payload = await response.json() as { results?: StockSuggestion[] }
   const rows = payload.results ?? []
   stockSuggestCache.set(key, { at: Date.now(), rows })
@@ -381,26 +404,24 @@ function parseNseMovers(payload: unknown, direction: 'up' | 'down'): MarketMover
       if (!symbol || seen.has(symbol) || series !== 'EQ' || ltp < 50) continue
       if (/-(RE|PP|W\d+)$/i.test(symbol)) continue
       seen.add(symbol)
-      rows.push({ symbol, name: symbol, ltp, changePct })
+      const meta = row.meta
+      const company = meta && typeof meta === 'object' ? String((meta as { companyName?: unknown }).companyName ?? '') : ''
+      rows.push({ symbol, name: company || symbol, ltp, changePct })
     }
   }
   rows.sort((a, b) => direction === 'up' ? b.changePct - a.changePct : a.changePct - b.changePct)
   return rows.slice(0, 10)
 }
 
-async function lookupStockNames(symbols: string[]): Promise<Map<string, string>> {
-  const unique = [...new Set(symbols)]
-  const entries = await Promise.all(unique.map(async (symbol) => {
-    try {
-      const response = await apiFetch(`/api/stocks/${encodeURIComponent(symbol)}`)
-      if (!response.ok) return [symbol, symbol] as const
-      const quote = parseStockQuote(await response.json())
-      return [symbol, quote?.name || symbol] as const
-    } catch {
-      return [symbol, symbol] as const
-    }
-  }))
-  return new Map(entries)
+async function fetchHoldingQuotes(symbols: string[]): Promise<StockQuote[]> {
+  const unique = [...new Set(symbols.map((symbol) => symbol.toUpperCase()))]
+  if (unique.length === 0) return []
+  const response = await apiFetch(`/api/stock-quotes?symbols=${encodeURIComponent(unique.join(','))}`)
+  if (!response.ok) return []
+  const payload = await response.json() as { quotes?: unknown[] }
+  return (payload.quotes ?? [])
+    .map((quote) => parseStockQuote(quote))
+    .filter((quote): quote is StockQuote => quote !== null)
 }
 
 function StockLabel({ symbol, name }: { symbol: string; name: string }) {
@@ -446,12 +467,18 @@ function App() {
   const [mutualFunds, setMutualFunds] = useState<MutualFund[]>([])
 
   const enrichHoldings = async (normalized: Holding[], allowWrite: boolean) => {
-    const symbols = [...new Set(normalized.map((item) => item.symbol.toUpperCase()))]
+    const symbols = [...new Set(
+      normalized
+        .filter((item) => !item.sector || !item.subSector)
+        .map((item) => item.symbol.toUpperCase()),
+    )]
     if (symbols.length === 0) return
-    const profiles = await Promise.all(symbols.map((symbol) => fetchYahooProfile(symbol)))
+    const profiles: Array<StockSuggestion | null> = []
+    for (const symbol of symbols) profiles.push(await fetchYahooProfile(symbol))
     const bySymbol = new Map(symbols.map((symbol, index) => [symbol, profiles[index]]))
     const enriched = normalized.map((holding) => {
       const profile = bySymbol.get(holding.symbol.toUpperCase())
+      if (!profile && (holding.sector && holding.subSector)) return holding
       const classified = classifyStock({
         industry: profile?.industry,
         sector: profile?.sector,
@@ -552,16 +579,11 @@ function App() {
       setStockQuotes([])
       return
     }
-    const quotes = await Promise.all(uniqueSymbols.map(async (symbol) => {
-      try {
-        const response = await apiFetch(`/api/stocks/${encodeURIComponent(symbol)}`)
-        if (!response.ok) return null
-        return parseStockQuote(await response.json())
-      } catch {
-        return null
-      }
-    }))
-    setStockQuotes(quotes.filter((quote): quote is StockQuote => quote !== null))
+    try {
+      setStockQuotes(await fetchHoldingQuotes(uniqueSymbols))
+    } catch {
+      /* Leave the previous quotes in place when the batch request fails. */
+    }
   }, [uniqueSymbols])
 
   const refreshMarket = useCallback(async () => {
@@ -581,12 +603,8 @@ function App() {
       setMarketError('')
 
       try {
-        const gainerList = gainerRes?.ok ? parseNseMovers(await gainerRes.json(), 'up') : []
-        const loserList = loserRes?.ok ? parseNseMovers(await loserRes.json(), 'down') : []
-        const names = await lookupStockNames([...gainerList, ...loserList].map((item) => item.symbol))
-        const withNames = (rows: MarketMover[]) => rows.map((row) => ({ ...row, name: names.get(row.symbol) ?? row.symbol }))
-        setGainers(withNames(gainerList))
-        setLosers(withNames(loserList))
+        setGainers(gainerRes?.ok ? parseNseMovers(await gainerRes.json(), 'up') : [])
+        setLosers(loserRes?.ok ? parseNseMovers(await loserRes.json(), 'down') : [])
       } catch {
         /* NSE sometimes returns an HTML challenge instead of JSON */
       }
@@ -834,17 +852,33 @@ function App() {
   }
 
   const addSip = async (entry: SipEntryInput) => {
-    const created = await createSipEntry(entry)
+    const tempId = `temp-${Date.now()}`
+    const pending = { id: tempId, ...entry, note: entry.note ?? '' }
+    const withSips = (sips: typeof pending[]) => {
+      const sorted = [...sips].sort((a, b) => b.year - a.year || b.month - a.month)
+      return {
+        sips: sorted,
+        sipCount: sorted.length,
+        totalInvested: sorted.reduce((sum, sip) => sum + sip.amount, 0),
+      }
+    }
     setMutualFunds((current) => current.map((fund) => {
       if (fund.id !== entry.mutualFundId) return fund
-      const sips = [...fund.sips, created].sort((a, b) => b.year - a.year || b.month - a.month)
-      return {
-        ...fund,
-        sips,
-        sipCount: sips.length,
-        totalInvested: sips.reduce((sum, sip) => sum + sip.amount, 0),
-      }
+      return { ...fund, ...withSips([...fund.sips, pending]) }
     }))
+    try {
+      const created = await createSipEntry(entry)
+      setMutualFunds((current) => current.map((fund) => {
+        if (fund.id !== entry.mutualFundId) return fund
+        return { ...fund, ...withSips(fund.sips.map((sip) => (sip.id === tempId ? created : sip))) }
+      }))
+    } catch (error) {
+      setMutualFunds((current) => current.map((fund) => {
+        if (fund.id !== entry.mutualFundId) return fund
+        return { ...fund, ...withSips(fund.sips.filter((sip) => sip.id !== tempId)) }
+      }))
+      throw error
+    }
   }
 
   const removeSip = async (fundId: string, sipId: string) => {
@@ -2247,6 +2281,12 @@ function HoldingModal({ members, initialMemberId, onClose, onSave }: {
       return
     }
     const controller = new AbortController()
+    const cached = cachedStockMatches(query)
+    if (cached.length) {
+      setSuggestions(cached)
+      setActiveIndex(0)
+      setOpen(true)
+    }
     setSearching(true)
     const timer = window.setTimeout(() => {
       void searchStocks(query, controller.signal)

@@ -366,6 +366,16 @@ class StockQuoteView(APIView):
             return Response({"error": str(exc) or "Quote unavailable"}, status=502)
 
 
+class StockQuotesView(APIView):
+    def get(self, request):
+        raw = request.query_params.get("symbols") or ""
+        symbols = [part.strip() for part in raw.split(",") if part.strip()]
+        try:
+            return Response({"quotes": market.stock_quotes(symbols)})
+        except Exception as exc:
+            return Response({"error": str(exc) or "Quotes unavailable"}, status=502)
+
+
 class StockDetailView(APIView):
     def get(self, request):
         symbol = (request.query_params.get("symbol") or "").strip()

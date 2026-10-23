@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from urllib.parse import quote
@@ -485,7 +485,8 @@ def _nse_equity(symbol):
 def _yahoo_equity(symbol):
     payload = _get_json(
         "https://query1.finance.yahoo.com/v8/finance/chart/"
-        f"{quote(symbol + '.NS', safe='')}?interval=1d&range=1d"
+        f"{quote(symbol + '.NS', safe='')}?interval=1d&range=1d",
+        timeout=4,
     )
     try:
         meta = payload["chart"]["result"][0]["meta"]
@@ -534,7 +535,7 @@ def _groww_equity_fundamentals(symbol):
             f"https://groww.in/v1/api/stocks_data/v1/company/search_id/{quote(search_id, safe='')}",
             ttl=30 * 60,
             key=f"stock-company-{search_id}",
-            timeout=8,
+            timeout=4,
         )
     except Exception:
         return None, None
@@ -583,6 +584,56 @@ def stock_quote(symbol):
     return payload
 
 
+def stock_quotes(symbols) -> list[dict]:
+    """One request for the dashboard. A small pool keeps the other server threads free for search."""
+    cleaned = []
+    seen = set()
+    for raw in symbols or []:
+        symbol = _normalize_symbol(str(raw))
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        cleaned.append(symbol)
+        if len(cleaned) >= 40:
+            break
+    if not cleaned:
+        return []
+
+    results = {}
+    missing = []
+    for symbol in cleaned:
+        hit = _cached(f"stock-built-{symbol}", 45)
+        if not hit or hit[0] != 200:
+            missing.append(symbol)
+            continue
+        try:
+            cached = json.loads(hit[1])
+        except json.JSONDecodeError:
+            missing.append(symbol)
+            continue
+        if (cached.get("fundamentals") or {}).get("mcap") is None:
+            missing.append(symbol)
+            continue
+        results[symbol] = cached
+
+    if missing:
+        executor = ThreadPoolExecutor(max_workers=3)
+        futures = [executor.submit(stock_quote, symbol) for symbol in missing]
+        try:
+            for future in futures:
+                try:
+                    payload = future.result()
+                except Exception:
+                    continue
+                symbol = _normalize_symbol((payload.get("stock") or {}).get("symbol") or "")
+                if symbol:
+                    results[symbol] = payload
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    return [results[symbol] for symbol in cleaned if symbol in results]
+
+
 def _normalize_symbol(symbol: str) -> str:
     return re.sub(r"[^A-Z0-9.&-]", "", (symbol or "").strip().upper())
 
@@ -599,6 +650,7 @@ def resolve_stock_search_id(symbol: str, search_id: str = "") -> str:
         f"?app=false&entity_type=Stocks&page=0&q={quote(symbol, safe='')}&size=12&web=true",
         ttl=60,
         key=f"stock-search-id-{symbol.lower()}",
+        timeout=3,
     )
     fallback = ""
     for row in payload.get("content") or []:
@@ -835,7 +887,7 @@ def _groww_stock_suggestions(query: str) -> list[dict]:
             f"?app=false&entity_type=Stocks&page=0&q={quote(query, safe='')}&size=12&web=true",
             ttl=10 * 60,
             key=f"groww-suggest-{query.lower()}",
-            timeout=5,
+            timeout=2,
         )
     except Exception:
         return []
@@ -868,7 +920,7 @@ def _yahoo_stock_suggestions(query: str) -> list[dict]:
     payload = _get_json(
         "https://query2.finance.yahoo.com/v1/finance/search"
         f"?q={quote(query, safe='')}&quotesCount=12&newsCount=0&listsCount=0",
-        timeout=5,
+        timeout=2,
     )
     rows = []
     seen = set()
@@ -897,8 +949,38 @@ def _yahoo_stock_suggestions(query: str) -> list[dict]:
     return rows
 
 
+def _first_stock_suggestions(query: str) -> list[dict]:
+    """Groww and Yahoo run together. The first one with matches wins, so a slow Groww call cannot hold a company-name search."""
+    executor = ThreadPoolExecutor(max_workers=2)
+    futures = [
+        executor.submit(_groww_stock_suggestions, query),
+        executor.submit(_yahoo_stock_suggestions, query),
+    ]
+    pending = set(futures)
+    started = time.time()
+    try:
+        while pending and time.time() - started < 2.4:
+            done, pending = wait(
+                pending,
+                timeout=max(0.05, 2.4 - (time.time() - started)),
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                break
+            for future in done:
+                try:
+                    rows = future.result() or []
+                except Exception:
+                    rows = []
+                if rows:
+                    return rows
+        return []
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 def stock_suggestions(query: str) -> list[dict]:
-    """One cached lookup for the add-stock box. Groww first, Yahoo if Groww is slow or empty."""
+    """Cached lookup for the add-stock box."""
     query = (query or "").strip()
     if len(query) < 2:
         return []
@@ -909,7 +991,7 @@ def stock_suggestions(query: str) -> list[dict]:
             return json.loads(hit[1])
         except json.JSONDecodeError:
             pass
-    rows = _rank_suggestions(query, _groww_stock_suggestions(query) or _yahoo_stock_suggestions(query))
+    rows = _rank_suggestions(query, _first_stock_suggestions(query))
     _remember(key, 200, json.dumps(rows), "application/json")
     if not rows:
         # Don't pin a transient empty result for the full 10 minutes.
@@ -1017,7 +1099,7 @@ def mf_nav_history(scheme_code: str):
         f"https://groww.in/v1/api/data/mf/web/v1/scheme/{quote(scheme_code, safe='')}/graph",
         ttl=6 * 60 * 60,
         key=f"mf-nav-{scheme_code}",
-        timeout=30,
+        timeout=12,
     )
     folio = payload.get("folio") or {}
     points = []
@@ -1044,7 +1126,7 @@ def mf_scheme(search_id: str):
         f"https://groww.in/v1/api/data/mf/web/v1/scheme/search/{quote(search_id, safe='')}",
         ttl=30 * 60,
         key=f"mf-scheme-{search_id}",
-        timeout=30,
+        timeout=12,
     )
     stats = (payload.get("return_stats") or [{}])[0] or {}
     category = payload.get("category") or ""

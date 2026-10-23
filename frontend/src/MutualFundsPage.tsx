@@ -127,8 +127,12 @@ export function MutualFundsPage({
           nested={Boolean(historyFund)}
           onClose={() => setSipFundId(null)}
           onSave={async (payload) => {
-            await onAddSip(payload)
             setSipFundId(null)
+            try {
+              await onAddSip(payload)
+            } catch (caught) {
+              window.alert(caught instanceof Error ? caught.message : 'Could not save SIP month.')
+            }
           }}
         />
       )}
@@ -260,8 +264,12 @@ export function MutualFundsPage({
           nested={Boolean(historyFund || detailFund)}
           onClose={() => setSipFundId(null)}
           onSave={async (payload) => {
-            await onAddSip(payload)
             setSipFundId(null)
+            try {
+              await onAddSip(payload)
+            } catch (caught) {
+              window.alert(caught instanceof Error ? caught.message : 'Could not save SIP month.')
+            }
           }}
         />
       )}

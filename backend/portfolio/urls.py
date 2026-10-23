@@ -24,6 +24,7 @@ urlpatterns = [
     path("mf-search", views.MfSearchView.as_view()),
     path("mf-scheme", views.MfSchemeView.as_view()),
     path("mf-nav", views.MfNavView.as_view()),
+    path("stock-quotes", views.StockQuotesView.as_view()),
     path("stocks/<str:symbol>", views.StockQuoteView.as_view()),
     path("stock-detail", views.StockDetailView.as_view()),
     path("stock-history", views.StockHistoryView.as_view()),
