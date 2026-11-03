@@ -565,6 +565,52 @@ def _enrich_quote_fundamentals(symbol, payload):
     return payload
 
 
+def _groww_equity(symbol):
+    """Yahoo/NSE miss some Indian listings (e.g. NSDL). Groww still has price + market cap."""
+    try:
+        search_id = resolve_stock_search_id(symbol)
+        if not search_id:
+            return None
+        company = _groww_get_json(
+            f"https://groww.in/v1/api/stocks_data/v1/company/search_id/{quote(search_id, safe='')}",
+            ttl=30 * 60,
+            key=f"stock-company-{search_id}",
+            timeout=4,
+        )
+    except Exception:
+        return None
+    header = company.get("header") or {}
+    details = company.get("details") or {}
+    nse = _normalize_symbol(header.get("nseScriptCode") or symbol)
+    live = _groww_live_price(nse, timeout=4) if nse else {}
+    price = _round(live.get("ltp"))
+    if price is None:
+        nse_price = ((company.get("priceData") or {}).get("nse") or {})
+        price = _round(nse_price.get("value") or nse_price.get("ltp") or nse_price.get("close"))
+    mcap = None
+    pe = None
+    for row in company.get("fundamentals") or []:
+        if not isinstance(row, dict):
+            continue
+        name = (row.get("name") or "").lower()
+        value = row.get("value")
+        if mcap is None and "market cap" in name:
+            mcap = _parse_mcap_cr(value)
+        if pe is None and ("p/e" in name or name.startswith("pe")):
+            pe = _round(_as_float(str(value).replace("%", "").strip()), 2)
+    if price is None and mcap is None:
+        return None
+    return {
+        "success": True,
+        "sector": header.get("industryName") or "",
+        "stock": {
+            "symbol": nse or symbol,
+            "name": header.get("displayName") or details.get("fullName") or symbol,
+        },
+        "fundamentals": {"cmp": price, "pe": pe, "mcap": mcap, "universe": ""},
+    }
+
+
 def stock_quote(symbol):
     symbol = re.sub(r"[^A-Z0-9.&-]", "", (symbol or "").strip().upper())
     if not symbol:
@@ -576,7 +622,8 @@ def stock_quote(symbol):
         if (cached.get("fundamentals") or {}).get("mcap") is not None:
             return cached
     # Yahoo answers from Render. NSE often blocks datacenter IPs and burns the worker on retries.
-    payload = _yahoo_equity(symbol) or _nse_equity(symbol)
+    # Groww covers listings Yahoo does not resolve (NSDL and similar).
+    payload = _yahoo_equity(symbol) or _nse_equity(symbol) or _groww_equity(symbol)
     if not payload:
         raise LookupError("Stock not found")
     payload = _enrich_quote_fundamentals(symbol, payload)
@@ -594,7 +641,7 @@ def stock_quotes(symbols) -> list[dict]:
             continue
         seen.add(symbol)
         cleaned.append(symbol)
-        if len(cleaned) >= 40:
+        if len(cleaned) >= 120:
             break
     if not cleaned:
         return []
@@ -617,17 +664,20 @@ def stock_quotes(symbols) -> list[dict]:
         results[symbol] = cached
 
     if missing:
-        executor = ThreadPoolExecutor(max_workers=3)
-        futures = [executor.submit(stock_quote, symbol) for symbol in missing]
+        executor = ThreadPoolExecutor(max_workers=4)
+        futures = {executor.submit(stock_quote, symbol): symbol for symbol in missing}
         try:
-            for future in futures:
+            for future, requested in futures.items():
                 try:
                     payload = future.result()
                 except Exception:
                     continue
-                symbol = _normalize_symbol((payload.get("stock") or {}).get("symbol") or "")
-                if symbol:
-                    results[symbol] = payload
+                if not isinstance(payload, dict):
+                    continue
+                # Keep the holding's ticker so the size chart can match every row.
+                stock = payload.setdefault("stock", {})
+                stock["symbol"] = requested
+                results[requested] = payload
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
@@ -669,7 +719,7 @@ def resolve_stock_search_id(symbol: str, search_id: str = "") -> str:
     return fallback
 
 
-def _groww_live_price(symbol: str):
+def _groww_live_price(symbol: str, timeout: int = 15):
     symbol = _normalize_symbol(symbol)
     if not symbol:
         return {}
@@ -678,7 +728,7 @@ def _groww_live_price(symbol: str):
             f"https://groww.in/v1/api/stocks_data/v1/tr_live_prices/exchange/NSE/segment/CASH/{quote(symbol, safe='')}/latest",
             ttl=30,
             key=f"stock-live-{symbol}",
-            timeout=15,
+            timeout=timeout,
         )
     except Exception:
         return {}
